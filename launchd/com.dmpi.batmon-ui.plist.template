@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dmpi.batmon-ui</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@PROJECT_DIR@/.venv/bin/python</string>
+        <string>@PROJECT_DIR@/ui/batmon_menu.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/batmon-ui.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/batmon-ui.err</string>
+</dict>
+</plist>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>batmon</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/index.css?v=2">
+<style>
+  :root {
+    --bg-color: #0b0f19;
+    --card-bg: rgba(20, 25, 40, 0.6);
+    --card-border: rgba(255, 255, 255, 0.05);
+    --card-hover: rgba(25, 30, 50, 0.8);
+    --text-main: #f0f4f8;
+    --text-muted: #8ba1b7;
+    --accent: #00d2ff;
+    --accent-glow: rgba(0, 210, 255, 0.4);
+    --success: #00ff88;
+    --danger: #ff3366;
+    --warning: #ffcc00;
+  }
+  body { font-family: 'Inter', -apple-system, sans-serif; margin: 0; background: var(--bg-color); color: var(--text-main); }
+  
+  header { display: flex; align-items: center; gap: 8px; padding: 12px 20px; background: rgba(11, 15, 25, 0.85); border-bottom: 1px solid var(--card-border); flex-wrap: wrap; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5); }
+  header h1 { font-size: 18px; font-weight: 700; margin: 0 12px 0 0; background: linear-gradient(90deg, var(--accent), #3a7bd5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  
+  #stale { display: none; background: rgba(255, 51, 102, 0.1); color: var(--danger); padding: 8px 20px; text-align: center; border-bottom: 1px solid var(--danger); font-weight: 600; font-size: 14px; text-shadow: 0 0 10px rgba(255,51,102,0.5); }
+  
+  nav button { background: none; border: none; color: var(--text-muted); padding: 8px 14px; cursor: pointer; font-size: 14px; font-weight: 500; transition: 0.3s; border-radius: 8px; }
+  nav button:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+  nav button.active { color: #fff; background: rgba(0, 210, 255, 0.1); box-shadow: 0 0 12px var(--accent-glow); }
+  
+  main { padding: 24px; max-width: 1040px; margin: 0 auto; }
+  .big { font-size: 48px; font-weight: 700; letter-spacing: -1px; margin-bottom: 12px; text-shadow: 0 0 20px rgba(255,255,255,0.1); display: flex; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--text-muted); font-size: 13px; }
+  
+  table { border-collapse: collapse; width: 100%; background: var(--card-bg); border-radius: 12px; overflow: hidden; border: 1px solid var(--card-border); box-shadow: 0 8px 32px rgba(0,0,0,0.3); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  td, th { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: left; font-size: 14px; }
+  th { background: rgba(0,0,0,0.3); font-weight: 600; color: var(--text-muted); text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  
+  canvas { max-height: 400px; margin-top: 10px; width: 100%; }
+  
+  h3 { margin: 28px 0 12px; font-size: 16px; font-weight: 600; color: var(--text-main); display: flex; align-items: center; gap: 8px; }
+  
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 16px 0; }
+  .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 18px; transition: 0.3s; box-shadow: 0 4px 24px rgba(0,0,0,0.2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .card:hover { transform: translateY(-3px); background: var(--card-hover); box-shadow: 0 8px 32px rgba(0,210,255,0.15); border-color: rgba(0,210,255,0.3); }
+  .card .k { color: var(--text-muted); font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px; }
+  .card .v { font-size: 24px; font-weight: 700; margin-top: 8px; color: #fff; text-shadow: 0 0 10px rgba(255,255,255,0.1); }
+  
+  .chip { display: inline-flex; align-items: center; background: rgba(0, 255, 136, 0.1); color: var(--success); border: 1px solid rgba(0,255,136,0.3); border-radius: 20px; padding: 4px 12px; font-size: 13px; font-weight: 600; margin-left: 12px; box-shadow: 0 0 12px rgba(0,255,136,0.15); vertical-align: middle; }
+  .chip.gray { background: rgba(255,255,255,0.05); color: var(--text-muted); border-color: rgba(255,255,255,0.1); box-shadow: none; }
+  .chip.red { background: rgba(255, 51, 102, 0.1); color: var(--danger); border-color: rgba(255,51,102,0.3); box-shadow: 0 0 12px rgba(255,51,102,0.15); }
+  
+  .rangebar { margin: 0 0 16px; display: flex; gap: 8px; align-items: center; }
+  .rangebar button { background: var(--card-bg); border: 1px solid var(--card-border); color: var(--text-muted); padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; transition: 0.2s; backdrop-filter: blur(8px); }
+  .rangebar button:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .rangebar button.active { background: rgba(0, 210, 255, 0.15); color: var(--accent); border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+  
+  .sharebar-wrapper { width: 100%; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.05); overflow: hidden; }
+  .sharebar { height: 100%; background: var(--accent); border-radius: 3px; box-shadow: 0 0 8px var(--accent); transition: width 0.3s ease; }
+  
+  .minibar { display: block; height: 6px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 6px var(--accent); transition: width 0.3s ease; }
+  .minibar-track { display: block; flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.05); overflow: hidden; }
+  
+  .barrow { display: flex; align-items: center; gap: 12px; font-size: 13px; margin: 6px 0; }
+  .barrow .lbl { width: 44px; color: var(--text-muted); font-weight: 500; }
+  .barrow .val { width: 70px; text-align: right; color: #fff; font-weight: 600; }
+  
+  #live { font-size: 13px; color: var(--text-muted); font-weight: 500; display: flex; align-items: center; }
+  #live .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); margin-right: 6px; box-shadow: 0 0 8px var(--success); animation: pulse 2s infinite; }
+  #live.down .dot { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+  
+  #anombadge { background: rgba(255, 51, 102, 0.2); color: var(--danger); border: 1px solid var(--danger); border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: 700; display: none; box-shadow: 0 0 10px rgba(255,51,102,0.4); margin-left: 6px; }
+  
+  .header-controls { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+  .control-group { display: flex; align-items: center; gap: 12px; background: rgba(0,0,0,0.4); padding: 6px 16px; border-radius: 24px; border: 1px solid var(--card-border); box-shadow: inset 0 2px 5px rgba(0,0,0,0.3); }
+  .cl-label { font-size: 13px; color: var(--text-main); width: 68px; font-weight: 600; }
+  #cl-status { width: auto; white-space: nowrap; }
+  .cl-link { font-size: 12px; color: var(--accent); text-decoration: none; border: 1px solid var(--accent); border-radius: 6px; padding: 2px 8px; background: none; cursor: pointer; font-family: inherit; }
+  .cl-link:hover { box-shadow: 0 0 8px var(--accent-glow); }
+
+  .toggle-simple { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer; transition: 0.2s; padding: 6px 14px; border-radius: 24px; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); }
+  .toggle-simple:hover { color: #fff; background: rgba(255,255,255,0.08); }
+  .toggle-simple:has(input:checked) { color: var(--accent); border-color: var(--accent); background: rgba(0,210,255,0.1); box-shadow: 0 0 12px var(--accent-glow); }
+  
+  .app-row .app-actions { opacity: 0; transition: opacity 0.2s; white-space: nowrap; width: 84px; text-align: right; }
+  .app-row:hover .app-actions { opacity: 1; }
+  .app-actions button { background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); color: var(--text-main); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 11px; margin-left: 4px; transition: 0.2s; font-weight: 600; }
+  .app-actions button:hover { background: var(--accent); color: #000; border-color: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .app-actions .btn-kill:hover { background: var(--danger); border-color: var(--danger); box-shadow: 0 0 10px var(--danger); color: #fff; }
+  /* New Keep Awake Styles */
+  .keep-awake-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255, 51, 102, 0.1);
+    border: 2px solid rgba(255, 51, 102, 0.4);
+    padding: 8px 16px;
+    border-radius: 20px;
+    box-shadow: 0 0 16px rgba(255, 51, 102, 0.3);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .keep-awake-wrapper:hover {
+    background: rgba(255, 51, 102, 0.2);
+    box-shadow: 0 0 24px rgba(255, 51, 102, 0.6);
+    transform: scale(1.02);
+  }
+  .keep-awake-wrapper label {
+    cursor: pointer;
+    font-weight: 800;
+    color: var(--danger);
+    font-size: 15px;
+    text-shadow: 0 0 10px rgba(255, 51, 102, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .keep-awake-wrapper input[type=checkbox] {
+    accent-color: var(--danger);
+    transform: scale(1.4);
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>batmon</h1>
+  <nav id="tabs">
+    <button data-tab="now" class="active">Now</button>
+    <button data-tab="history">History</button>
+    <button data-tab="apps">Apps</button>
+    <button data-tab="energy">Energy</button>
+    <button data-tab="health">Health</button>
+    <button data-tab="charging">Charging</button>
+    <button data-tab="anomalies">Anomalies <span id="anombadge"></span></button>
+  </nav>
+  <span id="live"><span class="dot"></span><span id="livetext">connecting</span></span>
+  <div class="header-controls">
+    <div class="control-group" id="longevity" title="macOS holds charge at 80% to slow battery aging. batmon cannot toggle this on Apple Silicon - set it in System Settings > Battery > Charging. This shows whether the limit is holding.">
+      <span class="cl-label" id="cl-status">Limit 80%</span>
+      <button class="cl-link" id="cl-settings" type="button">Settings</button>
+    </div>
+    <div class="control-group" title="Never let your screen lock or Mac sleep! This is essential to prevent Cisco AnyConnect or other VPNs from disconnecting when you step away.">
+      <div class="keep-awake-wrapper">
+        <input type="checkbox" id="awake"> 
+        <label for="awake">🔥 KEEP AWAKE (Anti-VPN Drop)</label>
+      </div>
+    </div>
+  </div>
+</header>
+<div id="radio-warnings-container" class="space-y-2"></div>
+<div id="stale">data stale, daemon down?</div>
+<main id="content"></main>
+
+<div class="legend-footer" style="margin-top: 40px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 11px; color: var(--text-muted); line-height: 1.6; text-align: center;">
+  <strong>📖 Legend & Abbreviations</strong><br>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">W / mW:</strong> Watts / milliwatts (Power / Speed of drain)</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">Wh:</strong> Watt-hours (Total energy consumed)</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">mAh:</strong> Milliampere-hours (Battery capacity volume)</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">CPU:</strong> Central Processing Unit</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">GPU:</strong> Graphics Processing Unit</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">ANE:</strong> Apple Neural Engine (AI/ML)</span>
+  <span style="display:inline-block; margin: 4px 8px;"><strong style="color:var(--accent)">SOC:</strong> State of Charge (%)</span>
+</div>
+<script src="/static/vendor/chart.umd.js"></script>
+<script src="/static/app.js?v=2"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+2026-07-07 18:04:20 +0500 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    0
+   SoftwareUpdateTask             0
+   PreventSystemSleep             0
+   ExternalMedia                  0
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            0
+Listed by owning process:
+   pid 357(powerd): [0x000679dd00018307] 01:10:47 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 592(mds_stores): [0x00068a74000b8882] 00:00:00 BackgroundTask named: "com.apple.metadata.mds_stores.power"  
+   pid 426(coreaudiod): [0x00067e0a0001a64d] 00:52:58 PreventUserIdleSystemSleep named: "com.apple.audio.A8-F5-E1-CE-C2-77:input.context.preventuseridlesleep"  
+	Created for PID: 27569. 
+	Resources: audio-in A8-F5-E1-CE-C2-77:input 
+   pid 13332(Electron): [0x0000f27900018f02] 164:06:09 NoIdleSleepAssertion named: "Electron"  
+   pid 417(WindowServer): [0x000679dd00098306] 00:00:00 UserIsActive named: "com.apple.iohideventsystem.queue.tickle serviceID:100000c9b service:AppleHIDKeyboardEventDriverV2 product:Apple Internal Keyboard / Trackpad eventType:3"  
+	Timeout will fire in 120 secs Action=TimeoutActionRelease
+No kernel assertions.

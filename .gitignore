@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+.obsidian/
+.worktrees/
+.env
+# internal docs and tools (should never hit github)
+docs/superpowers/
+.superpowers/
+.claude/
+requirements-dev.txt
+# self-learning system (internal - agent memory across sessions)
+constraints.md
+lessons.md
