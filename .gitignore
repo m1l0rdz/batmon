@@ -16,3 +16,5 @@ requirements-dev.txt
 # self-learning system (internal - agent memory across sessions)
 constraints.md
 lessons.md
+CLAUDE.md
+AGENTS.md
