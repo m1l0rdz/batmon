@@ -592,8 +592,42 @@ async function renderAnomalies(renderId) {
     ${rows}</table>`;
 }
 
-const RENDER = { now: renderNow, history: renderHistory, apps: renderApps,
-                 energy: renderEnergy, health: renderHealth,
+const SEV_COLOR = { high: "var(--danger)", medium: "var(--warning)", low: "var(--accent)" };
+
+async function renderAdvisor(renderId) {
+  const d = await j("/api/advisor");
+  if (renderId !== currentRenderId) return;
+  if (d.score == null) {
+    $("#content").innerHTML = emptyNote(
+      "not enough history for a score yet - habits build up from sessions and daily rollups over the first days of running");
+    return;
+  }
+  const gradeChip = { excellent: "", good: "", fair: " gray", poor: " red" }[d.grade] || " gray";
+  const compRows = d.components.map(c => `
+    <div class="barrow">
+      <span class="lbl" style="width:160px">${escapeHTML(c.name)}</span>
+      <span class="minibar-track"><span class="minibar" style="width:${(c.points / c.max * 100).toFixed(0)}%"></span></span>
+      <span class="val">${c.points}/${c.max}</span>
+      <span class="muted" style="flex-basis:100%; margin-left:172px">${escapeHTML(c.why)}</span>
+    </div>`).join("");
+  const recCards = d.recommendations.length === 0
+    ? `<div class="card"><div class="k">✅ All clear</div><div class="muted" style="margin-top:8px">No habit issues detected in the last 30 days.</div></div>`
+    : d.recommendations.map(r => `
+      <div class="card" style="border-top: 2px solid ${SEV_COLOR[r.severity]}">
+        <div class="k" style="color:${SEV_COLOR[r.severity]}">${r.severity.toUpperCase()} - ${escapeHTML(r.title)}</div>
+        <div class="muted" style="margin-top:8px; font-size:13px; line-height:1.5">${escapeHTML(r.body)}</div>
+      </div>`).join("");
+  $("#content").innerHTML = `
+    <div class="big">Battery Score: ${d.score}/100
+      <span class="chip${gradeChip}">${d.grade}</span></div>
+    <h3>Score breakdown</h3>
+    <div class="card" style="display:flex; flex-direction:column; gap:4px">${compRows}</div>
+    <h3>Recommendations</h3>
+    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))">${recCards}</div>`;
+}
+
+const RENDER = { now: renderNow, advisor: renderAdvisor, history: renderHistory,
+                 apps: renderApps, energy: renderEnergy, health: renderHealth,
                  charging: renderCharging, anomalies: renderAnomalies };
 
 function switchTab(tab) {
