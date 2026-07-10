@@ -18,3 +18,5 @@ constraints.md
 lessons.md
 CLAUDE.md
 AGENTS.md
+tests/
+scripts/
