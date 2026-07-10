@@ -452,7 +452,7 @@ async function renderHealth(renderId) {
 }
 
 async function renderCharging(renderId) {
-  const d = await j("/api/charging");
+  const [d, hb] = await Promise.all([j("/api/charging"), j("/api/habits")]);
   if (renderId !== currentRenderId) return;
   const a = d.aggregates;
   const hist = a.discharge_depth_hist || {};
@@ -486,6 +486,33 @@ async function renderCharging(renderId) {
       <div class="card" style="border-top: 2px solid var(--accent)">
         <div class="k">⚡ Avg Charge Power</div>
         <div class="v">${a.avg_charge_watts != null ? a.avg_charge_watts.toFixed(1) + " W" : "-"}</div>
+      </div>
+    </div>
+    <h3><span style="font-size:18px">🧭</span> Charging Habits (30 days)</h3>
+    <div class="grid">
+      <div class="card">
+        <div class="k">Time at full while plugged</div>
+        <div class="v">${hb.full_pct_of_ac != null ? hb.full_pct_of_ac.toFixed(0) + "% of AC time" : "-"}</div>
+      </div>
+      <div class="card">
+        <div class="k">Plugged-in share</div>
+        <div class="v">${hb.ac_share_pct != null ? hb.ac_share_pct.toFixed(0) + "%" : "-"}</div>
+      </div>
+      <div class="card">
+        <div class="k">Overnight charges</div>
+        <div class="v">${hb.overnight_sessions}</div>
+      </div>
+      <div class="card">
+        <div class="k">Deep discharges (&lt;10%)</div>
+        <div class="v">${hb.deep_discharges}</div>
+      </div>
+      <div class="card">
+        <div class="k">Cycles added</div>
+        <div class="v">${hb.cycles_30d != null ? hb.cycles_30d : "-"}</div>
+      </div>
+      <div class="card">
+        <div class="k">Avg battery temp</div>
+        <div class="v">${hb.avg_temp_c != null ? hb.avg_temp_c.toFixed(1) + " °C" : "-"}</div>
       </div>
     </div>
     ${histKeys.length ? '<h3 style="margin-top:32px"><span style="font-size:18px">📉</span> Discharge Depth Overview</h3><canvas id="c1" style="max-height:220px; margin-bottom: 24px;"></canvas>' : ""}
