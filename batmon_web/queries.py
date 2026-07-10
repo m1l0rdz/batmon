@@ -1,6 +1,6 @@
 """Read-only SQL for the API. Every function takes an open RO connection."""
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from batmond.sessions import integrate
 
@@ -322,3 +322,58 @@ def anomalies_since(conn, since_id: int):
                 d["detail"] = None
         results.append(d)
     return results
+
+
+OVERNIGHT_MIN_SEC = 2 * 3600  # ignore short evening top-ups
+
+
+def charging_habits(conn, now_ts: int) -> dict:
+    """30-day charging-habit stats. Durable tables only: raw battery_samples
+    keep just 48h, so everything here reads sessions / rollups /
+    battery_health_daily."""
+    since = now_ts - 30 * 86400
+
+    full_sec = conn.execute(
+        "SELECT COALESCE(SUM(COALESCE(ended, ?) - started), 0) FROM sessions"
+        " WHERE kind='full' AND started >= ?", (now_ts, since)).fetchone()[0]
+    ac_sec, bat_sec = conn.execute(
+        "SELECT COALESCE(SUM(on_ac_sec), 0), COALESCE(SUM(on_battery_sec), 0)"
+        " FROM rollup_hourly_battery WHERE hour >= ?", (since,)).fetchone()
+
+    deep = conn.execute(
+        "SELECT COUNT(*) FROM sessions WHERE kind='battery'"
+        " AND soc_end IS NOT NULL AND soc_end < 10 AND started >= ?",
+        (since,)).fetchone()[0]
+
+    # Overnight = plugged session starting 22:00-05:59 local, >= 2h long.
+    overnight = 0
+    for started, ended in conn.execute(
+            "SELECT started, COALESCE(ended, ?) FROM sessions"
+            " WHERE kind IN ('charging', 'full') AND started >= ?",
+            (now_ts, since)):
+        if ended - started < OVERNIGHT_MIN_SEC:
+            continue
+        hour = datetime.fromtimestamp(started).hour
+        if hour >= 22 or hour < 6:
+            overnight += 1
+
+    cyc = conn.execute(
+        "SELECT MIN(cycle_count), MAX(cycle_count), COUNT(cycle_count)"
+        " FROM battery_health_daily WHERE day >= date('now', '-30 days')"
+        " AND cycle_count IS NOT NULL").fetchone()
+    cycles_30d = (cyc[1] - cyc[0]) if cyc and cyc[2] >= 2 else None
+
+    avg_temp = conn.execute(
+        "SELECT AVG(avg_temp_c) FROM rollup_daily_battery"
+        " WHERE day >= date('now', '-30 days')").fetchone()[0]
+
+    total = (ac_sec or 0) + (bat_sec or 0)
+    return {
+        "window_days": 30,
+        "full_pct_of_ac": (full_sec / ac_sec * 100.0) if ac_sec else None,
+        "ac_share_pct": (ac_sec / total * 100.0) if total else None,
+        "deep_discharges": deep,
+        "overnight_sessions": overnight,
+        "cycles_30d": cycles_30d,
+        "avg_temp_c": avg_temp,
+    }
