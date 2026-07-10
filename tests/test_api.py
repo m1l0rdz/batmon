@@ -225,3 +225,10 @@ def test_db_unavailable_503(tmp_path):
     app = create_app(str(tmp_path / "missing.db"))
     with TestClient(app) as c:
         assert c.get("/api/now").status_code == 503
+
+def test_habits(client):
+    d = client.get("/api/habits").json()
+    assert d["window_days"] == 30
+    assert {"full_pct_of_ac", "ac_share_pct", "deep_discharges",
+            "overnight_sessions", "cycles_30d", "avg_temp_c"} <= d.keys()
+    assert isinstance(d["deep_discharges"], int)

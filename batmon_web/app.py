@@ -106,6 +106,11 @@ def create_app(db_path: str,
         with db() as conn:
             return queries.charging(conn)
 
+    @app.get("/api/habits")
+    def habits():
+        with db() as conn:
+            return queries.charging_habits(conn, int(time.time()))
+
     @app.get("/api/anomalies")
     def anomalies(since: int = 0):
         with db() as conn:
