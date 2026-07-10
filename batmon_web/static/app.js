@@ -390,7 +390,7 @@ async function renderEnergy(renderId) {
 }
 
 async function renderHealth(renderId) {
-  const [rows, now] = await Promise.all([j("/api/health"), j("/api/now")]);
+  const [rows, now, pred] = await Promise.all([j("/api/health"), j("/api/now"), j("/api/health/forecast")]);
   if (renderId !== currentRenderId) return;
   const h = now.health;
   
@@ -428,6 +428,18 @@ async function renderHealth(renderId) {
     </div>`;
   }
 
+  const predCard = pred.status === "ok"
+    ? `<div class="grid" style="margin-bottom:24px">
+        <div class="card"><div class="k">📈 Health in 1 year</div>
+          <div class="v">${pred.pct_in_1y.toFixed(1)}%</div>
+          <div class="muted">from ${pred.current_pct.toFixed(1)}% now, ${(pred.slope_pct_per_day * 30).toFixed(2)}%/month trend</div></div>
+        <div class="card"><div class="k">📉 Health in 2 years</div>
+          <div class="v">${pred.pct_in_2y.toFixed(1)}%</div>
+          <div class="muted">linear fit over recorded history - an estimate, not a promise</div></div>
+      </div>`
+    : `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
+        <div class="muted" style="margin-top:8px">Needs ${14} days of history spanning a month - ${pred.days || 0} recorded so far. Check back later.</div></div>`;
+
   const cards = h ? `<div class="grid">
     <div class="card"><div class="k">Max capacity</div><div class="v">${h.max_capacity_pct.toFixed(1)}%</div></div>
     <div class="card"><div class="k">Cycle count</div><div class="v">${h.cycle_count}</div></div>
@@ -435,7 +447,7 @@ async function renderHealth(renderId) {
     <div class="card"><div class="k">Design</div><div class="v">${h.design_capacity_mah.toFixed(0)} mAh</div></div>
   </div>${extraCards}` : emptyNote("no health data yet");
   
-  $("#content").innerHTML = cards +
+  $("#content").innerHTML = predCard + cards +
     (rows.length < 2
       ? emptyNote("trend appears after a few daily snapshots (one is taken when the daemon starts and then once per day)")
       : '<h3 style="margin-top:24px"><span style="font-size:18px">📉</span> Capacity Trend</h3><canvas id="c1"></canvas>');
