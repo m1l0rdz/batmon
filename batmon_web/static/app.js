@@ -741,12 +741,6 @@ $("#cl-settings").addEventListener("click", () => {
     headers: { "X-Batmon-Client": "1" } }).catch(e => console.error(e));
 });
 
-switchTab("now");
-pollStatus();
-setInterval(pollStatus, 30000);
-
-})();
-
 async function renderReport(renderId) {
   const d = await j("/api/report");
   if (renderId !== currentRenderId) return;
@@ -772,3 +766,9 @@ async function renderReport(renderId) {
     <p><button class="cl-link" id="print-report" type="button">Print / Save as PDF</button></p>`;
   document.getElementById("print-report").addEventListener("click", () => window.print());
 }
+
+switchTab("now");
+pollStatus();
+setInterval(pollStatus, 30000);
+
+})();
