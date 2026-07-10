@@ -209,3 +209,26 @@ def test_check_anomalies(mock_notification, mock_urlopen):
     mock_notification.assert_any_call(
         "😴 Excessive Sleep Drain", "", "Battery dropped 5.0% while asleep")
     assert app.last_anomaly_id == 4
+
+def test_rebuild_menu_score(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({"score": {"score": 94, "grade": "excellent"}}).encode("utf-8")
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__.return_value = mock_response
+    mock_urlopen.return_value = mock_ctx
+    
+    app = BatmonApp()
+    app.update_menu(None)
+    assert "Score 94/100 (excellent)" in app.menu.keys()
+
+def test_rebuild_menu_no_score(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = b"{}"
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__.return_value = mock_response
+    mock_urlopen.return_value = mock_ctx
+    
+    app = BatmonApp()
+    app.update_menu(None)
+    # Just check it doesn't crash and adds no score line
+    assert not any("Score" in k for k in app.menu.keys())

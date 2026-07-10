@@ -124,6 +124,10 @@ class BatmonApp(rumps.App):
         if c and c.get("package_mw") is not None:
             self.menu.add(f"CPU {c.get('cpu_mw') or 0:.0f} - GPU {c.get('gpu_mw') or 0:.0f} - pkg {c.get('package_mw'):.0f} mW")
 
+        sc = data.get("score") or {}
+        if sc.get("score") is not None:
+            self.menu.add(f"Score {sc['score']}/100 ({sc.get('grade', '')})")
+
         sess = data.get("session")
         if sess and sess.get("soc_now") is not None:
             soc_start = sess.get("soc_start")
