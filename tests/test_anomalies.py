@@ -175,3 +175,50 @@ def test_weak_charger_not_triggered_when_charging(conn):
     apps = [r[0] for r in conn.execute("SELECT app FROM anomalies").fetchall()]
     assert "__SYSTEM_WEAK_CHARGER__" not in apps
 
+
+def _seed_full_plugged(conn, now_ts, n=650, soc=100.0, on_ac=1):
+    rows = [(now_ts - i * 15, soc, on_ac, 1) for i in range(n)]
+    conn.executemany(
+        "INSERT INTO battery_samples(ts, soc_pct, on_ac, is_charging)"
+        " VALUES (?,?,?,?)", rows)
+
+
+def test_full_plugged_fires(conn):
+    now_ts = 1_800_000_000
+    _seed_full_plugged(conn, now_ts)
+    inserted = check(conn, now_ts)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in inserted]
+    assert "__SYSTEM_FULL_PLUGGED__" in kinds
+
+
+def test_full_plugged_once_per_day(conn):
+    now_ts = 1_800_000_000
+    _seed_full_plugged(conn, now_ts)
+    check(conn, now_ts)
+    again = check(conn, now_ts + 60)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in again]
+    assert "__SYSTEM_FULL_PLUGGED__" not in kinds
+
+
+def test_full_plugged_needs_full_window(conn):
+    now_ts = 1_800_000_000
+    _seed_full_plugged(conn, now_ts, n=300)  # only 75 min of data
+    inserted = check(conn, now_ts)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in inserted]
+    assert "__SYSTEM_FULL_PLUGGED__" not in kinds
+
+
+def test_full_plugged_silent_on_battery_dip(conn):
+    now_ts = 1_800_000_000
+    _seed_full_plugged(conn, now_ts)
+    conn.execute(
+        "INSERT INTO battery_samples(ts, soc_pct, on_ac, is_charging)"
+        " VALUES (?, 90, 0, 0)", (now_ts - 3599,))
+    inserted = check(conn, now_ts)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in inserted]
+    assert "__SYSTEM_FULL_PLUGGED__" not in kinds
+

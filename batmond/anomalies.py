@@ -61,6 +61,9 @@ def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str |
         elif kind == "__SYSTEM_WEAK_CHARGER__":
             advice = "Adapter/cable can't outpace the load - use a higher-wattage USB-C charger, check the cable, or close heavy apps while charging."
             
+        elif kind == "__SYSTEM_FULL_PLUGGED__":
+            advice = "Battery held at ~100% on AC for 3+ hours - this is the main aging driver. Unplug, or enable the native 80% charge limit (System Settings > Battery > Charging)."
+            
         else:
             culprits = [{"app": kind, "wh": 0.0}]
             if ratio is not None:
@@ -173,6 +176,19 @@ def check_system_anomalies(conn, now_ts: int, tz=None) -> list[int]:
             "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (now_ts, today, "__SYSTEM_WEAK_CHARGER__", deficit, 5.0, deficit / 5.0, detail)
         )
+        if cur.rowcount:
+            inserted.append(cur.lastrowid)
+
+    # 5. Kept at full on AC: >= 3h continuously plugged at >= 97% SoC.
+    # 15s cadence -> 720 samples per 3h; >= 600 tolerates short sampling gaps.
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(soc_pct), MIN(on_ac) FROM battery_samples"
+        " WHERE ts >= ?", (now_ts - 3 * 3600,)).fetchone()
+    if row and row[0] >= 600 and row[1] is not None and row[1] >= 97.0 and row[2] == 1:
+        detail = build_detail(conn, "__SYSTEM_FULL_PLUGGED__", now_ts, tz)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now_ts, today, "__SYSTEM_FULL_PLUGGED__", 3.0, 3.0, 1.0, detail))
         if cur.rowcount:
             inserted.append(cur.lastrowid)
 
