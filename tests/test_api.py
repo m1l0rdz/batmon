@@ -232,3 +232,18 @@ def test_habits(client):
     assert {"full_pct_of_ac", "ac_share_pct", "deep_discharges",
             "overnight_sessions", "cycles_30d", "avg_temp_c"} <= d.keys()
     assert isinstance(d["deep_discharges"], int)
+
+def test_advisor(client):
+    d = client.get("/api/advisor").json()
+    assert {"score", "grade", "components", "recommendations",
+            "habits"} <= d.keys()
+    if d["score"] is not None:
+        assert 0 <= d["score"] <= 100
+    for r in d["recommendations"]:
+        assert {"id", "severity", "title", "body"} <= r.keys()
+
+
+def test_now_has_score(client):
+    d = client.get("/api/now").json()
+    assert "score" in d
+    assert {"score", "grade"} <= d["score"].keys()

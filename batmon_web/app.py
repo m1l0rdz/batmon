@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from batmond.db import open_ro
 from batmon_web import queries
+from batmon_web import advisor
 from batmon_web.awake import AwakeManager
 
 STATIC = Path(__file__).parent / "static"
@@ -64,7 +65,13 @@ def create_app(db_path: str,
                     "lpm": queries.get_state_val(conn, "lpm"),
                     "radio_warnings": queries.radio_warnings(conn),
                     "dark_wakes": queries.dark_wakes(conn),
-                    "frequent_culprit": queries.frequent_culprit(conn)}
+                    "frequent_culprit": queries.frequent_culprit(conn),
+                    "score": _score_light(conn, now_ts)}
+
+    def _score_light(conn, now_ts):
+        s = advisor.compute_score(queries.charging_habits(conn, now_ts),
+                                  queries.health(conn))
+        return {"score": s["score"], "grade": s["grade"]}
 
     @app.get("/api/history")
     def history(range: Literal["24h", "7d", "30d"] = "24h"):
@@ -110,6 +117,22 @@ def create_app(db_path: str,
     def habits():
         with db() as conn:
             return queries.charging_habits(conn, int(time.time()))
+
+    @app.get("/api/advisor")
+    def advisor_view():
+        with db() as conn:
+            now_ts = int(time.time())
+            habits = queries.charging_habits(conn, now_ts)
+            score = advisor.compute_score(habits, queries.health(conn))
+            ctx = {"habits": habits,
+                   "top_apps": queries.apps(conn, "24h", now_ts),
+                   "frequent_culprit": queries.frequent_culprit(conn),
+                   "avg_brightness_7d": queries.avg_brightness_7d(conn, now_ts),
+                   "charge_limit": queries.charge_limit_status(conn, now_ts)}
+            return {"score": score["score"], "grade": score["grade"],
+                    "components": score["components"],
+                    "recommendations": advisor.recommendations(ctx),
+                    "habits": habits}
 
     @app.get("/api/anomalies")
     def anomalies(since: int = 0):

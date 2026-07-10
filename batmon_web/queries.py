@@ -377,3 +377,8 @@ def charging_habits(conn, now_ts: int) -> dict:
         "cycles_30d": cycles_30d,
         "avg_temp_c": avg_temp,
     }
+
+def avg_brightness_7d(conn, now_ts: int):
+    return conn.execute(
+        "SELECT AVG(avg_brightness) FROM rollup_hourly_battery"
+        " WHERE hour >= ?", (now_ts - 7 * 86400,)).fetchone()[0]
