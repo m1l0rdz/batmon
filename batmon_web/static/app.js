@@ -650,7 +650,8 @@ async function renderAdvisor(renderId) {
 
 const RENDER = { now: renderNow, advisor: renderAdvisor, history: renderHistory,
                  apps: renderApps, energy: renderEnergy, health: renderHealth,
-                 charging: renderCharging, anomalies: renderAnomalies };
+                 charging: renderCharging, anomalies: renderAnomalies,
+                 report: renderReport };
 
 function switchTab(tab) {
   currentTab = tab;
@@ -745,3 +746,29 @@ pollStatus();
 setInterval(pollStatus, 30000);
 
 })();
+
+async function renderReport(renderId) {
+  const d = await j("/api/report");
+  if (renderId !== currentRenderId) return;
+  const apps = d.top_apps.map(a =>
+    `<tr><td>${escapeHTML(a.app)}</td><td style="text-align:right">${fmtWh(a.attributed_wh)}</td></tr>`).join("");
+  $("#content").innerHTML = `
+    <div class="big">Weekly Battery Report
+      ${d.score != null ? `<span class="chip">Score ${d.score}/100 (${d.grade})</span>` : ""}
+    </div>
+    <div class="muted">${new Date(d.since_ts * 1000).toLocaleDateString()} - ${new Date().toLocaleDateString()}</div>
+    <div class="grid">
+      <div class="card"><div class="k">Energy out</div><div class="v">${fmtWh(d.wh_out)}</div></div>
+      <div class="card"><div class="k">Energy in</div><div class="v">${fmtWh(d.wh_in)}</div></div>
+      <div class="card"><div class="k">On battery</div><div class="v">${d.on_battery_h.toFixed(1)} h</div></div>
+      <div class="card"><div class="k">On AC</div><div class="v">${d.on_ac_h.toFixed(1)} h</div></div>
+      <div class="card"><div class="k">Avg temp</div><div class="v">${d.avg_temp_c != null ? d.avg_temp_c.toFixed(1) + " °C" : "-"}</div></div>
+      <div class="card"><div class="k">Anomalies</div><div class="v">${d.anomaly_count}</div></div>
+      <div class="card"><div class="k">Battery sessions</div><div class="v">${d.sessions_battery}</div></div>
+      <div class="card"><div class="k">Deep discharges</div><div class="v">${d.deep_discharges}</div></div>
+    </div>
+    <h3>Top apps this week</h3>
+    <table><tr><th>App</th><th style="text-align:right">Energy</th></tr>${apps || "<tr><td colspan=2 class=muted>no data</td></tr>"}</table>
+    <p><button class="cl-link" id="print-report" type="button">Print / Save as PDF</button></p>`;
+  document.getElementById("print-report").addEventListener("click", () => window.print());
+}

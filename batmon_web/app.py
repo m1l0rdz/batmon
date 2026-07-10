@@ -139,6 +139,17 @@ def create_app(db_path: str,
                     "recommendations": advisor.recommendations(ctx),
                     "habits": habits}
 
+    @app.get("/api/report")
+    def report():
+        with db() as conn:
+            now_ts = int(time.time())
+            d = queries.weekly_report(conn, now_ts)
+            s = advisor.compute_score(queries.charging_habits(conn, now_ts),
+                                      queries.health(conn))
+            d["score"] = s["score"]
+            d["grade"] = s["grade"]
+            return d
+
     @app.get("/api/anomalies")
     def anomalies(since: int = 0):
         with db() as conn:

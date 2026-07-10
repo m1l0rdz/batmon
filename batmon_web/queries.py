@@ -414,3 +414,34 @@ def health_prediction(conn):
     return {"status": "ok", "current_pct": ys[-1],
             "slope_pct_per_day": slope,
             "pct_in_1y": _proj(365), "pct_in_2y": _proj(730)}
+
+def weekly_report(conn, now_ts: int) -> dict:
+    since = now_ts - 7 * 86400
+    tot = conn.execute(
+        "SELECT COALESCE(SUM(wh_in),0), COALESCE(SUM(wh_out),0),"
+        " COALESCE(SUM(on_battery_sec),0), COALESCE(SUM(on_ac_sec),0),"
+        " AVG(avg_temp_c) FROM rollup_hourly_battery WHERE hour >= ?",
+        (since,)).fetchone()
+    top = conn.execute(
+        "SELECT app, SUM(attributed_mwh) FROM rollup_hourly_apps"
+        f" WHERE hour >= ? AND app NOT IN ({_SYS_PH})"
+        " GROUP BY app ORDER BY 2 DESC LIMIT 5",
+        (since,) + SYSTEM_APPS).fetchall()
+    sess = conn.execute(
+        "SELECT SUM(CASE WHEN kind='battery' THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN kind != 'battery' THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN kind='battery' AND soc_end IS NOT NULL"
+        "     AND soc_end < 10 THEN 1 ELSE 0 END)"
+        " FROM sessions WHERE started >= ?", (since,)).fetchone()
+    anom = conn.execute(
+        "SELECT COUNT(*) FROM anomalies WHERE ts >= ?", (since,)).fetchone()[0]
+    return {"since_ts": since,
+            "wh_in": tot[0], "wh_out": tot[1],
+            "on_battery_h": tot[2] / 3600.0, "on_ac_h": tot[3] / 3600.0,
+            "avg_temp_c": tot[4],
+            "top_apps": [{"app": a, "attributed_wh": m / 1000.0}
+                         for a, m in top],
+            "sessions_battery": sess[0] or 0,
+            "sessions_charging": sess[1] or 0,
+            "deep_discharges": sess[2] or 0,
+            "anomaly_count": anom}

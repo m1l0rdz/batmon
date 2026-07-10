@@ -124,6 +124,12 @@
     transform: scale(1.4);
     cursor: pointer;
   }
+  @media print {
+    header, #stale, .legend-footer, .rangebar, #radio-warnings-container { display: none !important; }
+    body { background: #fff; color: #000; }
+    .card, table { box-shadow: none; border: 1px solid #ccc; background: #fff; }
+    .card .v, .card .k, td, th, h3, .big, .muted { color: #000 !important; text-shadow: none; }
+  }
 </style>
 </head>
 <body>
@@ -138,6 +144,7 @@
     <button data-tab="health">Health</button>
     <button data-tab="charging">Charging</button>
     <button data-tab="anomalies">Anomalies <span id="anombadge"></span></button>
+    <button data-tab="report">Report</button>
   </nav>
   <span id="live"><span class="dot"></span><span id="livetext">connecting</span></span>
   <div class="header-controls">

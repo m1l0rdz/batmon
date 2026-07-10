@@ -251,3 +251,10 @@ def test_now_has_score(client):
 def test_health_forecast(client):
     d = client.get("/api/health/forecast").json()
     assert d["status"] in ("ok", "insufficient_data")
+
+def test_report(client):
+    d = client.get("/api/report").json()
+    assert {"wh_in", "wh_out", "on_battery_h", "on_ac_h", "top_apps",
+            "sessions_battery", "sessions_charging", "deep_discharges",
+            "anomaly_count", "score"} <= d.keys()
+    assert isinstance(d["top_apps"], list)
