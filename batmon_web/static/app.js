@@ -563,6 +563,16 @@ async function renderAnomalies(renderId) {
         todayText = `${a.wh_today.toFixed(1)}W draining while plugged in`;
         baselineText = "should be charging";
         ratioText = "-";
+    } else if (a.app === "__SYSTEM_FULL_PLUGGED__") {
+        appText = "🔋 Held at 100% on AC";
+        todayText = `${a.wh_today.toFixed(0)}h at full`;
+        baselineText = "3h threshold";
+        ratioText = "-";
+    } else if (a.app === "__SYSTEM_HOT_CHARGE__") {
+        appText = "🔥 Hot Charging";
+        todayText = `${a.wh_today.toFixed(1)} °C avg while charging`;
+        baselineText = "38 °C threshold";
+        ratioText = "-";
     }
 
     let rowHTML = `<tr ${a.detail ? 'style="border-bottom: none;"' : ''}>

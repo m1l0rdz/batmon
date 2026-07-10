@@ -82,6 +82,12 @@ class BatmonApp(rumps.App):
                 elif app_name == "__SYSTEM_THERMAL__":
                     title = "🌡️ High Thermal Pressure"
                     body = f"System thermal pressure is elevated ({int(a['wh_today'])} mins today)"
+                elif app_name == "__SYSTEM_FULL_PLUGGED__":
+                    title = "🔋 Held at 100% on AC"
+                    body = f"Battery held at ~100% on AC for {a['wh_today']:.0f}h"
+                elif app_name == "__SYSTEM_HOT_CHARGE__":
+                    title = "🔥 Hot Charging"
+                    body = f"Battery is charging hot ({a['wh_today']:.1f} °C avg)"
                 else:
                     title = f"batmon: {app_name} anomaly"
                     body = f"{a['wh_today']:.1f} Wh today vs {a['wh_baseline']:.1f} Wh baseline ({a['ratio']:.1f}x)"
