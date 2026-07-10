@@ -108,6 +108,11 @@ def create_app(db_path: str,
         with db() as conn:
             return queries.health(conn)
 
+    @app.get("/api/health/forecast")
+    def health_forecast():
+        with db() as conn:
+            return queries.health_prediction(conn)
+
     @app.get("/api/charging")
     def charging():
         with db() as conn:

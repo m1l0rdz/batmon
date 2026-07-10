@@ -382,3 +382,35 @@ def avg_brightness_7d(conn, now_ts: int):
     return conn.execute(
         "SELECT AVG(avg_brightness) FROM rollup_hourly_battery"
         " WHERE hour >= ?", (now_ts - 7 * 86400,)).fetchone()[0]
+
+MIN_PREDICTION_POINTS = 14
+MIN_PREDICTION_SPAN_DAYS = 30
+
+
+def health_prediction(conn):
+    """Least-squares linear fit of max_capacity_pct over calendar days.
+    Deliberately not ML: capacity fade is near-linear at this horizon and a
+    transparent slope is explainable in the UI."""
+    rows = conn.execute(
+        "SELECT day, max_capacity_pct FROM battery_health_daily"
+        " WHERE max_capacity_pct IS NOT NULL ORDER BY day").fetchall()
+    if len(rows) < MIN_PREDICTION_POINTS:
+        return {"status": "insufficient_data", "days": len(rows)}
+    d0 = datetime.strptime(rows[0][0], "%Y-%m-%d")
+    xs = [(datetime.strptime(d, "%Y-%m-%d") - d0).days for d, _ in rows]
+    ys = [c for _, c in rows]
+    if xs[-1] - xs[0] < MIN_PREDICTION_SPAN_DAYS:
+        return {"status": "insufficient_data", "days": len(rows)}
+    n = float(len(xs))
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    denom = sum((x - mx) ** 2 for x in xs)
+    slope = (sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+             if denom else 0.0)
+
+    def _proj(days_ahead):
+        return max(0.0, min(100.0, ys[-1] + slope * days_ahead))
+
+    return {"status": "ok", "current_pct": ys[-1],
+            "slope_pct_per_day": slope,
+            "pct_in_1y": _proj(365), "pct_in_2y": _proj(730)}

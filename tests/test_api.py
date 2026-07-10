@@ -247,3 +247,7 @@ def test_now_has_score(client):
     d = client.get("/api/now").json()
     assert "score" in d
     assert {"score", "grade"} <= d["score"].keys()
+
+def test_health_forecast(client):
+    d = client.get("/api/health/forecast").json()
+    assert d["status"] in ("ok", "insufficient_data")
