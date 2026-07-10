@@ -211,6 +211,41 @@ def test_full_plugged_needs_full_window(conn):
     assert "__SYSTEM_FULL_PLUGGED__" not in kinds
 
 
+def _seed_hot_charge(conn, now_ts, temp=40.0, n=30):
+    rows = [(now_ts - i * 15, 60.0, 1, 1, temp) for i in range(n)]
+    conn.executemany(
+        "INSERT INTO battery_samples(ts, soc_pct, on_ac, is_charging, temp_c)"
+        " VALUES (?,?,?,?,?)", rows)
+
+
+def test_hot_charge_fires(conn):
+    now_ts = 1_800_100_000
+    _seed_hot_charge(conn, now_ts)
+    inserted = check(conn, now_ts)
+    rows = [conn.execute("SELECT app, ratio FROM anomalies WHERE id=?", (i,)).fetchone()
+            for i in inserted]
+    hot = [r for r in rows if r[0] == "__SYSTEM_HOT_CHARGE__"]
+    assert hot and hot[0][1] == pytest.approx(40.0 / 38.0)
+
+
+def test_hot_charge_silent_when_cool(conn):
+    now_ts = 1_800_100_000
+    _seed_hot_charge(conn, now_ts, temp=33.0)
+    inserted = check(conn, now_ts)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in inserted]
+    assert "__SYSTEM_HOT_CHARGE__" not in kinds
+
+
+def test_hot_charge_needs_enough_samples(conn):
+    now_ts = 1_800_100_000
+    _seed_hot_charge(conn, now_ts, n=5)
+    inserted = check(conn, now_ts)
+    kinds = [conn.execute("SELECT app FROM anomalies WHERE id=?", (i,)).fetchone()[0]
+             for i in inserted]
+    assert "__SYSTEM_HOT_CHARGE__" not in kinds
+
+
 def test_full_plugged_silent_on_battery_dip(conn):
     now_ts = 1_800_000_000
     _seed_full_plugged(conn, now_ts)

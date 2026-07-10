@@ -64,6 +64,16 @@ def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str |
         elif kind == "__SYSTEM_FULL_PLUGGED__":
             advice = "Battery held at ~100% on AC for 3+ hours - this is the main aging driver. Unplug, or enable the native 80% charge limit (System Settings > Battery > Charging)."
             
+        elif kind == "__SYSTEM_HOT_CHARGE__":
+            rows = conn.execute(
+                "SELECT app, SUM(attributed_mwh) FROM app_energy "
+                f"WHERE ts_minute >= ? AND app NOT IN ({sys_ph}) "
+                "GROUP BY app ORDER BY 2 DESC LIMIT 3",
+                (now_ts - 15 * 60,) + SYSTEM_APPS
+            ).fetchall()
+            culprits = [{"app": r[0], "wh": float(r[1] / 1000.0)} for r in rows if r[1] > 0]
+            advice = "Battery is charging hot (>= 38 C) - wear accelerates above 35 C. Move off soft surfaces, pause heavy apps while charging, or charge later."
+
         else:
             culprits = [{"app": kind, "wh": 0.0}]
             if ratio is not None:
@@ -189,6 +199,21 @@ def check_system_anomalies(conn, now_ts: int, tz=None) -> list[int]:
         cur = conn.execute(
             "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (now_ts, today, "__SYSTEM_FULL_PLUGGED__", 3.0, 3.0, 1.0, detail))
+        if cur.rowcount:
+            inserted.append(cur.lastrowid)
+
+    # 6. Hot charging: >= 5 min of charging samples averaging >= 38 C.
+    row = conn.execute(
+        "SELECT COUNT(*), AVG(temp_c) FROM battery_samples"
+        " WHERE ts >= ? AND is_charging = 1 AND temp_c IS NOT NULL",
+        (now_ts - 15 * 60,)).fetchone()
+    if row and row[0] >= 20 and row[1] is not None and row[1] >= 38.0:
+        avg_temp = row[1]
+        detail = build_detail(conn, "__SYSTEM_HOT_CHARGE__", now_ts, tz)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now_ts, today, "__SYSTEM_HOT_CHARGE__", avg_temp, 38.0,
+             avg_temp / 38.0, detail))
         if cur.rowcount:
             inserted.append(cur.lastrowid)
 
