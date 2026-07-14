@@ -16,6 +16,17 @@ LOOKBACK_DAYS = 7
 # allow_nan=False: inf would 500 /api/anomalies. Cap keeps it JSON-safe.
 RATIO_CAP = 999.0
 
+# macOS background daemons whose energy tracks system activity (WiFi scans,
+# iCloud sync, push, Bonjour), not a user app. Their attributed Wh can spike
+# 2-4x on a transient sync/scan burst, but the user cannot pause or kill them
+# from the Now tab, so an "app anomaly" alert on them is un-actionable noise.
+# Excluded from check_app_anomalies firing only; still counted everywhere else.
+SYSTEM_DAEMONS = frozenset({
+    "airportd", "mDNSResponder", "apsd", "rapportd", "sharingd",
+    "identityservicesd", "nsurlsessiond",
+    "cloudd", "bird", "AddressBookSourceSync", "syncdefaultsd",
+})
+
 
 def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str | None:
     try:
@@ -96,6 +107,8 @@ def check_app_anomalies(conn, now_ts: int, tz=None) -> list[int]:
             todays[app] = todays.get(app, 0.0) + mwh
     inserted = []
     for app, mwh_today in todays.items():
+        if app in SYSTEM_DAEMONS:
+            continue
         wh_today = mwh_today / 1000.0
         n_days, avg_mwh = conn.execute(
             "SELECT COUNT(*), AVG(attributed_mwh) FROM rollup_daily_apps"
