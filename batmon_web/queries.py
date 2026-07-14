@@ -45,20 +45,46 @@ def todays_peak_soc(conn, now_ts):
     return row[0] if row and row[0] is not None else None
 
 
+def check_native_charge_limit():
+    try:
+        import plistlib
+        with open("/Library/Preferences/com.apple.powerd.charging.plist", "rb") as f:
+            p = plistlib.load(f)
+            if "policies" in p:
+                inner = plistlib.loads(p["policies"])
+                objects = inner.get("$objects", [])
+                root_uid = inner["$top"]["root"]
+                root_obj = objects[root_uid.data]
+                
+                policy_uids = root_obj.get("NS.objects", [])
+                for pu in policy_uids:
+                    policy = objects[pu.data]
+                    reason_uid = policy.get("reason")
+                    if reason_uid:
+                        reason = objects[reason_uid.data]
+                        if reason == "manualChargeLimit":
+                            if not policy.get("terminated", False):
+                                return True
+        return False
+    except Exception:
+        return None
+
+
 def charge_limit_status(conn, now_ts):
     """Read-only mirror of the native macOS 80% charge limit.
 
     batmon cannot set the limit on Apple Silicon (no accessible SMC key); the
-    user toggles it in System Settings. We report the supported level and infer
-    whether it is holding from today's peak charge: <=82 holding, >85 off, the
-    band between is inconclusive (None)."""
+    user toggles it in System Settings. We attempt to read the native macOS 
+    powerd plist, and fallback to inferring it from today's peak charge."""
+    holding = check_native_charge_limit()
     peak = todays_peak_soc(conn, now_ts)
-    holding = None
-    if peak is not None:
-        if peak <= 82:
-            holding = True
-        elif peak > 85:
-            holding = False
+    
+    if holding is None:
+        if peak is not None:
+            if peak <= 82:
+                holding = True
+            elif peak > 85:
+                holding = False
     return {"level": 80, "control": "system_settings",
             "todays_peak_soc": peak, "holding": holding}
 
