@@ -390,7 +390,10 @@ async function renderEnergy(renderId) {
 }
 
 async function renderHealth(renderId) {
-  const [rows, now, pred] = await Promise.all([j("/api/health"), j("/api/now"), j("/api/health/forecast")]);
+  const [rows, now, pred, advice] = await Promise.all([
+    j("/api/health"), j("/api/now"), j("/api/health/forecast"),
+    j("/api/advisor")
+  ]);
   if (renderId !== currentRenderId) return;
   const h = now.health;
   
@@ -428,17 +431,26 @@ async function renderHealth(renderId) {
     </div>`;
   }
 
-  const predCard = pred.status === "ok"
-    ? `<div class="grid" style="margin-bottom:24px">
+  let predCard;
+  if (pred.status === "ok") {
+    predCard = `<div class="grid" style="margin-bottom:24px">
         <div class="card"><div class="k">📈 Health in 1 year</div>
           <div class="v">${pred.pct_in_1y.toFixed(1)}%</div>
           <div class="muted">from ${pred.current_pct.toFixed(1)}% now, ${(pred.slope_pct_per_day * 30).toFixed(2)}%/month trend</div></div>
         <div class="card"><div class="k">📉 Health in 2 years</div>
           <div class="v">${pred.pct_in_2y.toFixed(1)}%</div>
-          <div class="muted">linear fit over recorded history - an estimate, not a promise</div></div>
-      </div>`
-    : `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
-        <div class="muted" style="margin-top:8px">Needs ${14} days of history spanning a month - ${pred.days || 0} recorded so far. Check back later.</div></div>`;
+          <div class="muted">robust trend over weekly medians - an estimate, not a promise</div></div>
+      </div>`;
+  } else if (pred.status === "unstable_trend") {
+    predCard = `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
+      <div class="muted" style="margin-top:8px">Enough history has been collected, but capacity readings do not form a reliable trend yet. Current health is shown below; the forecast will appear automatically when the trend stabilizes.</div></div>`;
+  } else {
+    const ready = pred.estimated_ready_day
+      ? ` Earliest estimate: ${escapeHTML(pred.estimated_ready_day)}.`
+      : "";
+    predCard = `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
+      <div class="muted" style="margin-top:8px">${pred.points || 0}/${pred.required_points} daily measurements collected, covering ${pred.span_days || 0}/${pred.required_span_days} required calendar days and ${pred.weeks || 0}/${pred.required_weeks} weeks.${ready} Current health and recommendations are already available below.</div></div>`;
+  }
 
   const cards = h ? `<div class="grid">
     <div class="card"><div class="k">Max capacity</div><div class="v">${h.max_capacity_pct.toFixed(1)}%</div></div>
@@ -446,8 +458,22 @@ async function renderHealth(renderId) {
     <div class="card"><div class="k">Full charge</div><div class="v">${h.raw_max_capacity_mah.toFixed(0)} mAh</div></div>
     <div class="card"><div class="k">Design</div><div class="v">${h.design_capacity_mah.toFixed(0)} mAh</div></div>
   </div>${extraCards}` : emptyNote("no health data yet");
+
+  const healthRecCards = advice.recommendations.length === 0
+    ? `<div class="card"><div class="k">✅ All clear</div><div class="muted" style="margin-top:8px">No habit issues detected in the last 30 days.</div></div>`
+    : advice.recommendations.map(r => `
+      <div class="card" style="border-top: 2px solid ${SEV_COLOR[r.severity]}">
+        <div class="k" style="color:${SEV_COLOR[r.severity]}">${r.severity.toUpperCase()} - ${escapeHTML(r.title)}</div>
+        <div class="muted" style="margin-top:8px; font-size:13px; line-height:1.5">${escapeHTML(r.body)}</div>
+      </div>`).join("");
+  const scoreText = advice.score == null
+    ? ""
+    : ` <span class="chip${advice.grade === "fair" ? " gray" : advice.grade === "poor" ? " red" : ""}">${advice.score}/100 - ${escapeHTML(advice.grade)}</span>`;
+  const recommendationSection = `
+    <h3 style="margin-top:24px">Recommendations${scoreText}</h3>
+    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))">${healthRecCards}</div>`;
   
-  $("#content").innerHTML = predCard + cards +
+  $("#content").innerHTML = predCard + cards + recommendationSection +
     (rows.length < 2
       ? emptyNote("trend appears after a few daily snapshots (one is taken when the daemon starts and then once per day)")
       : '<h3 style="margin-top:24px"><span style="font-size:18px">📉</span> Capacity Trend</h3><canvas id="c1"></canvas>');

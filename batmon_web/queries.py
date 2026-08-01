@@ -1,6 +1,7 @@
 """Read-only SQL for the API. Every function takes an open RO connection."""
 import json
 from datetime import datetime, timedelta
+from statistics import median
 
 from batmond.sessions import integrate
 
@@ -409,36 +410,111 @@ def avg_brightness_7d(conn, now_ts: int):
         "SELECT AVG(avg_brightness) FROM rollup_hourly_battery"
         " WHERE hour >= ?", (now_ts - 7 * 86400,)).fetchone()[0]
 
-MIN_PREDICTION_POINTS = 14
-MIN_PREDICTION_SPAN_DAYS = 30
+MIN_PREDICTION_POINTS = 30
+MIN_PREDICTION_SPAN_DAYS = 60
+MIN_PREDICTION_WEEKS = 8
+MIN_PREDICTION_R2 = 0.25
+MAX_PREDICTION_SLOPE_PCT_PER_DAY = 0.05
+
+
+def _prediction_coverage(rows):
+    points = len(rows)
+    first_day = rows[0][0] if rows else None
+    last_day = rows[-1][0] if rows else None
+    if rows:
+        first = datetime.strptime(first_day, "%Y-%m-%d")
+        last = datetime.strptime(last_day, "%Y-%m-%d")
+        span_days = (last - first).days
+    else:
+        last = None
+        span_days = 0
+    remaining_points = max(0, MIN_PREDICTION_POINTS - points)
+    remaining_span_days = max(0, MIN_PREDICTION_SPAN_DAYS - span_days)
+    remaining_days = max(remaining_points, remaining_span_days)
+    return {
+        "days": points,
+        "points": points,
+        "span_days": span_days,
+        "first_day": first_day,
+        "last_day": last_day,
+        "required_points": MIN_PREDICTION_POINTS,
+        "required_span_days": MIN_PREDICTION_SPAN_DAYS,
+        "required_weeks": MIN_PREDICTION_WEEKS,
+        "remaining_points": remaining_points,
+        "remaining_span_days": remaining_span_days,
+        "estimated_ready_day": (
+            (last + timedelta(days=remaining_days)).strftime("%Y-%m-%d")
+            if last is not None and remaining_days else last_day
+        ),
+    }
 
 
 def health_prediction(conn):
-    """Least-squares linear fit of max_capacity_pct over calendar days.
-    Deliberately not ML: capacity fade is near-linear at this horizon and a
-    transparent slope is explainable in the UI."""
+    """Robust linear trend over weekly median capacity observations."""
     rows = conn.execute(
         "SELECT day, max_capacity_pct FROM battery_health_daily"
         " WHERE max_capacity_pct IS NOT NULL ORDER BY day").fetchall()
-    if len(rows) < MIN_PREDICTION_POINTS:
-        return {"status": "insufficient_data", "days": len(rows)}
+    coverage = _prediction_coverage(rows)
+    if not rows:
+        return {"status": "insufficient_data", **coverage, "weeks": 0}
+
     d0 = datetime.strptime(rows[0][0], "%Y-%m-%d")
     xs = [(datetime.strptime(d, "%Y-%m-%d") - d0).days for d, _ in rows]
     ys = [c for _, c in rows]
-    if xs[-1] - xs[0] < MIN_PREDICTION_SPAN_DAYS:
-        return {"status": "insufficient_data", "days": len(rows)}
-    n = float(len(xs))
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    denom = sum((x - mx) ** 2 for x in xs)
-    slope = (sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
-             if denom else 0.0)
+    buckets = {}
+    for x, y in zip(xs, ys):
+        buckets.setdefault(x // 7, []).append((x, y))
+    weekly = [(median(x for x, _ in values),
+               median(y for _, y in values))
+              for _, values in sorted(buckets.items())]
+    coverage["weeks"] = len(weekly)
+    coverage["remaining_weeks"] = max(
+        0, MIN_PREDICTION_WEEKS - len(weekly))
+    remaining_days = max(
+        coverage["remaining_points"],
+        coverage["remaining_span_days"],
+        coverage["remaining_weeks"] * 7,
+    )
+    if coverage["last_day"] and remaining_days:
+        last = datetime.strptime(coverage["last_day"], "%Y-%m-%d")
+        coverage["estimated_ready_day"] = (
+            last + timedelta(days=remaining_days)).strftime("%Y-%m-%d")
+    if (len(rows) < MIN_PREDICTION_POINTS
+            or coverage["span_days"] < MIN_PREDICTION_SPAN_DAYS
+            or len(weekly) < MIN_PREDICTION_WEEKS):
+        return {"status": "insufficient_data", **coverage}
+
+    pair_slopes = [
+        (y2 - y1) / (x2 - x1)
+        for i, (x1, y1) in enumerate(weekly)
+        for x2, y2 in weekly[i + 1:]
+        if x2 != x1
+    ]
+    slope = median(pair_slopes) if pair_slopes else 0.0
+    intercept = median(y - slope * x for x, y in weekly)
+    residuals = [y - (intercept + slope * x) for x, y in weekly]
+    mean_y = sum(y for _, y in weekly) / len(weekly)
+    ss_res = sum(r * r for r in residuals)
+    ss_tot = sum((y - mean_y) ** 2 for _, y in weekly)
+    trend_r2 = 1.0 if ss_tot == 0 and ss_res == 0 else (
+        1.0 - ss_res / ss_tot if ss_tot else 0.0)
+    current_pct = median(ys[-7:])
+
+    base = {
+        **coverage,
+        "current_pct": current_pct,
+        "slope_pct_per_day": slope,
+        "trend_r2": trend_r2,
+        "method": "weekly_median_theil_sen",
+    }
+    if (abs(slope) > MAX_PREDICTION_SLOPE_PCT_PER_DAY
+            or trend_r2 < MIN_PREDICTION_R2):
+        return {"status": "unstable_trend", **base}
 
     def _proj(days_ahead):
-        return max(0.0, min(100.0, ys[-1] + slope * days_ahead))
+        return max(0.0, min(100.0, current_pct + slope * days_ahead))
 
-    return {"status": "ok", "current_pct": ys[-1],
-            "slope_pct_per_day": slope,
+    return {"status": "ok", **base,
             "pct_in_1y": _proj(365), "pct_in_2y": _proj(730)}
 
 def weekly_report(conn, now_ts: int) -> dict:

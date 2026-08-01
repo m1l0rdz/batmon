@@ -88,18 +88,25 @@ _SEV_ORDER = ("high", "medium", "low")
 def recommendations(ctx):
     h = ctx.get("habits") or {}
     recs = []
+    charge_limit = ctx.get("charge_limit") or {}
+    limit_protecting = charge_limit.get("holding") is True
 
     on = h.get("overnight_sessions") or 0
-    if on >= R_OVERNIGHT and (ctx.get("charge_limit") or {}).get("holding") is not True:
+    if on >= R_OVERNIGHT and not limit_protecting:
         recs.append({"id": "overnight_full", "severity": "high",
                      "title": "Charging overnight at 100%",
                      "body": "%d overnight charge sessions in 30 days. Holding a full battery for hours is the main aging driver - enable the native 80%% charge limit in System Settings > Battery > Charging." % on})
 
     fp = h.get("full_pct_of_ac")
     if fp is not None and fp > R_FULL_PCT:
-        recs.append({"id": "parked_at_full", "severity": "high",
-                     "title": "Battery parked at full charge",
-                     "body": "%.0f%% of plugged-in time is spent at 100%%. Enable the 80%% charge limit or unplug once charged." % fp})
+        if limit_protecting:
+            recs.append({"id": "charge_limit_recovery", "severity": "low",
+                         "title": "80% charge limit is protecting the battery",
+                         "body": "%.0f%% of plugged-in time was spent at 100%% in the rolling 30-day history, but today's 80%% ceiling shows the limit is now protecting the battery. Keep it enabled; this historical metric and score will normalize." % fp})
+        else:
+            recs.append({"id": "parked_at_full", "severity": "high",
+                         "title": "Battery parked at full charge",
+                         "body": "%.0f%% of plugged-in time is spent at 100%%. Enable the 80%% charge limit or unplug once charged." % fp})
 
     t = h.get("avg_temp_c")
     if t is not None and t > R_HOT_C:
