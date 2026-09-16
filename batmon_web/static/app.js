@@ -657,6 +657,7 @@
       <p class="note">${esc(d.note || "History starts after the updated collector records its first samples. Earlier cell readings cannot be reconstructed.")}</p>
       <div class="grid">${card("Latest bucket mean", num(last?.spread_avg_mv, 1, " mV"), last ? `Bucket starts ${tsLabel(last.ts)}. Highest minus lowest cell in each sample.` : "Waiting for validated cell readings.")}${card("Cell readings", num(d.cell_samples, 0), `Of ${num(d.sample_count, 0)} recorded samples in this view.`)}${card("Low-load readings", num(d.low_load_samples, 0), "Subset with known charge, temperature and current.")}${card("Internal resistance", "Not verified", d.resistance?.note || "SMC BR00..BR14 and B0R1..B0R3 are withheld until their units and meaning are cross-checked on this Mac.")}</div>
       ${d.status === "awaiting_collector" ? `<div class="notice">The collector needs the updated version before it can store cell history.</div>` : ""}
+      ${d.status === "service_update_required" ? `<div class="notice">The running web service has not loaded cell history. Restart batmon to enable it.</div>` : ""}
       ${valid.length ? canvas("cell-spread", "Cell voltage spread: mean, sampled maximum and low-load subset in millivolts") : empty("No cell history in this range. Missing readings are not zero imbalance.")}
       <p class="note">${esc(d.filter_note || "Low-load observations are a comparison subset, not proof of rest or a battery fault test.")} Even this subset can vary with recent load and balancing. Follow persistent changes under similar conditions; a single peak does not diagnose a bad cell.</p>
       ${rows.some(r => r.cell1_mv != null) ? `<h3>Individual cell voltages</h3>${canvas("cell-volts", "Average voltage of each reported cell")}` : ""}
@@ -683,7 +684,10 @@
     const [d, advice, cells] = await Promise.all([
       json("/api/insights?range=7d"),
       json("/api/advisor"),
-      json("/api/health/cells?range=" + ranges.health),
+      json("/api/health/cells?range=" + ranges.health).catch(error => {
+        if (error.status !== 404) throw error;
+        return {status:"service_update_required",points:[]};
+      }),
     ]);
     const h = d.health;
     if (

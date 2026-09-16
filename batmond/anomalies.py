@@ -194,11 +194,14 @@ def check_system_anomalies(conn, now_ts: int, tz=None) -> list[int]:
     """, (now_ts - 15 * 60,)).fetchone()
     from batmond.chargers import assessment as charger_assessment
     source_evidence = charger_assessment(conn, now_ts)
-    weak = (source_evidence['assessment']['code'] == 'battery_assisting'
-            if source_evidence is not None else
-            bool(row and row[0] >= 20 and row[1] is not None and row[1] < -5.0))
+    # Stale charger state means charger recording stopped; use battery samples.
+    if source_evidence is not None and source_evidence['assessment']['code'] != 'stale':
+        weak = source_evidence['assessment']['code'] == 'battery_assisting'
+        deficit = abs(source_evidence['watts']) if weak else None
+    else:
+        weak = bool(row and row[0] >= 20 and row[1] is not None and row[1] < -5.0)
+        deficit = abs(row[1]) if weak else None
     if weak:
-        deficit = abs(row[1]) if row and row[1] is not None else abs(source_evidence['watts'])
         detail = build_detail(conn, "__SYSTEM_WEAK_CHARGER__", now_ts, tz)
         cur = conn.execute(
             "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",

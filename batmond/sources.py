@@ -6,7 +6,6 @@ them tasks have no energy_impact and attribution is all zeros
 from __future__ import annotations
 
 import subprocess
-from functools import lru_cache
 import time
 
 from batmond.parsers.charge_policy import read_policy
@@ -33,16 +32,20 @@ class LiveSource:
             self._policy_next = now + 60
         return self._policy
 
-    @lru_cache(maxsize=1)
     def charger_model(self):
+        # Cache only a successful read; a failed sysctl is retried next tick.
+        if getattr(self, '_model', None) is not None:
+            return self._model
         try:
             model = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'hw.model'], timeout=3).decode().strip()
         except (OSError, subprocess.SubprocessError):
             return {}
         # Verified Apple model mapping; unknown models get no inferred wattage.
         if model == 'Mac16,8':
-            return dict(identifier=model,name='MacBook Pro 14-inch (M4 Pro, 2024)',fast_charge_reference_w=96)
-        return dict(identifier=model)
+            self._model = dict(identifier=model,name='MacBook Pro 14-inch (M4 Pro, 2024)',fast_charge_reference_w=96)
+        else:
+            self._model = dict(identifier=model)
+        return self._model
 
     def powermetrics_burst(self) -> bytes:
         return subprocess.run(POWERMETRICS_CMD, capture_output=True,
