@@ -59,8 +59,8 @@
     catch (_) { return fallback; }
   };
   const save = (key, value) => {
-    try { localStorage.setItem("batmon." + key, JSON.stringify(value)); }
-    catch (_) { /* Browsing with storage disabled still supports this session. */ }
+    try { localStorage.setItem("batmon." + key, JSON.stringify(value)); return true; }
+    catch (_) { return false; /* Browsing with storage disabled still supports this session. */ }
   };
   let reserve = [10, 20, 30].includes(saved("reserve", 20)) ? saved("reserve", 20) : 20;
   let goalMinutes = Number(saved("goalMinutes", 120)) || 120;
@@ -75,6 +75,7 @@
   if (!experiment || typeof experiment !== "object" || !Number.isFinite(experiment.start)) experiment = null;
   let reportData, reportExport = null;
   const ranges = {
+    health: "24h",
     history: "24h",
     apps: "24h",
     energy: "24h",
@@ -82,6 +83,7 @@
     report: "7d",
   };
   const rangeOptions = {
+    health: ["24h", "7d", "30d", "90d", "1y"],
     history: ["24h", "7d", "30d"],
     apps: ["1h", "8h", "24h", "7d", "30d"],
     energy: ["24h", "7d", "30d"],
@@ -107,7 +109,11 @@
     "Coverage is observed awake collection, not device uptime. Unobserved time includes sleep and missing telemetry. Windows end at the last completed UTC hour; labels use local time.";
   async function json(url, options) {
     const r = await fetch(url, options);
-    if (!r.ok) throw new Error(`Request failed (${r.status})`);
+    if (!r.ok) {
+      const error = new Error(`Request failed (${r.status})`);
+      error.status = r.status;
+      throw error;
+    }
     return r.json();
   }
   function destroyCharts() {
@@ -599,7 +605,7 @@
           card("Cell voltage range", `${volts(l.lifetime_cell_min_mv)} to ${volts(l.lifetime_cell_max_mv)}`, "Lowest and highest single-cell voltage."),
         ].join("")
       : card("Lifetime record", sensorValue(null, "lifetime"), sensorNote(null, "lifetime", "Not reported yet."));
-    return `<h2>Battery cells</h2><div class="grid">${cells}</div><p class="note">Instant cell voltages from the battery controller (SMC). A single reading is not a diagnosis.</p><h2>Lifetime record</h2><div class="grid">${life}</div><p class="note">Extremes kept by the battery gauge since it was first powered, not only while batmon was running. They never reset.</p>`;
+    return `<h2>Battery cells</h2><div class="grid">${cells}</div><p class="note">Instant cell voltages from the battery controller (SMC). A single reading is not a diagnosis.</p><h2>Lifetime record</h2><div class="grid">${life}</div><p class="note">Extremes reported by the battery gauge, including time before batmon. They are not dated events and may change after gauge reset or battery service.</p>`;
   }
   function healthCards(h) {
     const checked =
@@ -644,10 +650,40 @@
       <p class="note">${esc(checked)} Raw sensor capacity and its historical medians are separate measurements, not Apple's maximum-capacity diagnostic. They may differ from the macOS assessment because of calibration and measurement methods.</p>
       <div class="grid">${observed}</div>`;
   }
+  function cellHistoryMarkup(d) {
+    const rows = d.points || [], valid = rows.filter(r => r.spread_avg_mv != null);
+    const last = valid.at(-1);
+    return `<section class="evidence-panel"><h2>Cell history</h2>${rangebar("health")}
+      <p class="note">${esc(d.note || "History starts after the updated collector records its first samples. Earlier cell readings cannot be reconstructed.")}</p>
+      <div class="grid">${card("Latest bucket mean", num(last?.spread_avg_mv, 1, " mV"), last ? `Bucket starts ${tsLabel(last.ts)}. Highest minus lowest cell in each sample.` : "Waiting for validated cell readings.")}${card("Cell readings", num(d.cell_samples, 0), `Of ${num(d.sample_count, 0)} recorded samples in this view.`)}${card("Low-load readings", num(d.low_load_samples, 0), "Subset with known charge, temperature and current.")}${card("Internal resistance", "Not verified", d.resistance?.note || "SMC BR00..BR14 and B0R1..B0R3 are withheld until their units and meaning are cross-checked on this Mac.")}</div>
+      ${d.status === "awaiting_collector" ? `<div class="notice">The collector needs the updated version before it can store cell history.</div>` : ""}
+      ${valid.length ? canvas("cell-spread", "Cell voltage spread: mean, sampled maximum and low-load subset in millivolts") : empty("No cell history in this range. Missing readings are not zero imbalance.")}
+      <p class="note">${esc(d.filter_note || "Low-load observations are a comparison subset, not proof of rest or a battery fault test.")} Even this subset can vary with recent load and balancing. Follow persistent changes under similar conditions; a single peak does not diagnose a bad cell.</p>
+      ${rows.some(r => r.cell1_mv != null) ? `<h3>Individual cell voltages</h3>${canvas("cell-volts", "Average voltage of each reported cell")}` : ""}
+      ${rows.some(r => r.c_rate_avg != null) ? `<h3>Load and charge context</h3>${canvas("cell-load", "Design-normalized current in C and state of charge in percent")}<p class="note">Design C-rate = absolute battery current / design capacity. 1 C means a current numerically equal to the rated amp-hour capacity, not a runtime prediction or a safety limit. Charge and discharge are combined; SOC uses the right axis.</p>` : ""}
+      ${rows.some(r => r.temp_avg_c != null) ? `<h3>Battery sensor temperature</h3>${canvas("cell-temp", "Mean and sampled maximum battery temperature")}<p class="note">Internal battery temperature is not ambient temperature. Apple's 10-35 °C MacBook operating guidance concerns the surrounding air, so it is not used as a sensor fault threshold.</p>` : ""}
+      <details class="evidence-details"><summary>How to interpret these measurements</summary><p class="note">Voltage differences depend on state of charge, current, temperature and balancing. Cell voltages are retained only when all reported cells are plausible and their sum is within 5% of pack voltage; this rejects incomplete reads and is not a health tolerance. The 24h view groups samples into 5-minute buckets; longer views use hourly or daily summaries. Means are weighted by valid sample count. Peaks describe recorded samples, not continuous monitoring.</p><p class="note">Resistance requires a verified controller mapping or a controlled measurement with known timing, load and state of charge. Voltage divided by current is not internal resistance. TI manuals explain the principles, but do not identify the controller or SMC mapping in this Mac.</p><p class="note"><a href="https://www.ti.com/lit/an/slua450/slua450.pdf" target="_blank" rel="noopener noreferrer">TI fuel-gauge algorithm</a> · <a href="https://www.ti.com/lit/an/slua433/slua433.pdf" target="_blank" rel="noopener noreferrer">TI cell imbalance guidance</a> · <a href="https://www.apple.com/batteries/maximizing-performance/" target="_blank" rel="noopener noreferrer">Apple temperature and battery care</a></p></details></section>`;
+  }
+  function cellHistoryCharts(d) {
+    const rows = d.points || [], gap = d.resolution_sec || 300;
+    const draw = (id, specs, unit, opts) => chart(id, specs.map(([label,key]) => ({label,data:series(rows,key,gap),pointRadius:2})), opts || timeOptions(unit));
+    if (rows.some(r => r.spread_avg_mv != null)) draw("cell-spread", [["Mean spread","spread_avg_mv"],["Sampled maximum","spread_max_mv"],["Low-load mean","low_load_avg_mv"]], "mV", timeOptions("mV", {beginAtZero:true}));
+    if (rows.some(r => r.cell1_mv != null)) {
+      const specs = [1,2,3,4].filter(i => rows.some(r => r[`cell${i}_mv`] != null)).map(i => [`Cell ${i}`,`cell${i}_mv`]);
+      draw("cell-volts", specs, "mV");
+    }
+    if (rows.some(r => r.c_rate_avg != null)) {
+      const options = timeOptions("Design C-rate", {beginAtZero:true});
+      options.scales.soc = {position:"right",min:0,max:100,title:{display:true,text:"Charge %"},grid:{drawOnChartArea:false}};
+      chart("cell-load", [{label:"Mean |current| / design",data:series(rows,"c_rate_avg",gap),pointRadius:2},{label:"Sampled maximum C-rate",data:series(rows,"c_rate_max",gap),pointRadius:2},{label:"Mean charge %",data:series(rows,"soc_avg_pct",gap),yAxisID:"soc",borderDash:[4,4],pointRadius:2}], options);
+    }
+    if (rows.some(r => r.temp_avg_c != null)) draw("cell-temp", [["Mean battery temperature","temp_avg_c"],["Sampled maximum","temp_max_c"]], "°C");
+  }
   async function renderHealth(id) {
-    const [d, advice] = await Promise.all([
+    const [d, advice, cells] = await Promise.all([
       json("/api/insights?range=7d"),
       json("/api/advisor"),
+      json("/api/health/cells?range=" + ranges.health),
     ]);
     const h = d.health;
     if (
@@ -660,6 +696,7 @@
           healthCards(h) +
           `<p class="note">${num(h.points, 0)} daily observations spanning ${num(h.span_days, 0)} days. Each 7-day median needs at least four observations.</p>` +
           batteryRecord(h) +
+          cellHistoryMarkup(cells) +
           (h.weekly?.length
             ? `<h2>Weekly raw sensor median</h2>${canvas("health", "Weekly median raw battery capacity relative to design")}`
             : empty(
@@ -669,6 +706,7 @@
       )
     )
       return;
+    cellHistoryCharts(cells);
     if (h.weekly?.length)
       chart(
         "health",
@@ -692,12 +730,19 @@
     const bt = d.backtest || {};
     return `<details class="evidence-details"><summary>Capacity changes and forecast validation</summary><p class="note">${esc(d.note || "Capacity shifts are observations, not a diagnosis of recalibration or replacement.")}</p>${table(["Observed shift", "Raw change", "Context"], (d.shifts || []).map(s => `<tr><td>${esc(s.day)}</td><td>${signed(s.change_pp, " pp")}</td><td>${esc(s.reason)}</td></tr>`).join(""))}<div class="grid">${card("Out-of-sample validation", bt.mae_pp != null ? num(bt.mae_pp, 2, " pp mean error") : "Withheld", bt.note || "A stable observed trend is required.")}${card("Constant-median baseline", num(bt.baseline_mae_pp, 2, " pp mean error"), bt.status === "not_improved" ? "Trend did not improve on this simpler baseline." : "Compare held-out error, not years-ahead accuracy.")}${card("Validation windows", num(bt.windows, 0))}</div>${table(["Cycle observation window", "Cycles added", "Snapshots"], (d.cycle_windows || []).map(w => `<tr><td>${num(w.days,0)} days</td><td>${num(w.cycles_added,0)}</td><td>${num(w.observations,0)}</td></tr>`).join(""))}</details>`;
   }
+  const chargerWidgets = window.BatmonChargers.create({esc,num,wh,duration,tsLabel,card,table,canvas,chart,timeOptions,saved,save});
+  let chargerDays = 30;
   async function renderCharging(id) {
-    const [d, h, recent] = await Promise.all([
+    const [d, h, recent, chargerData] = await Promise.all([
       json("/api/charging"),
       json("/api/habits"),
       json("/api/workbench?hours=24"),
+      json(`/api/chargers?days=${chargerDays}`).catch(error => {
+        if (error.status !== 404) throw error;
+        return {available:false,service_update_required:true,current:null,sessions:[],patterns:[],days:chargerDays};
+      }),
     ]);
+    if (id !== renderId) return;
     const ex = recent.exposure || {};
     const a = d.aggregates || {};
     const sessions = d.sessions.filter(
@@ -714,13 +759,16 @@
       !paint(
         id,
         heading(
-          "Charging patterns",
-          `Last ${d.window_days || 30} days. Holding on AC does not mean the battery is at 100%.`,
-        ) +
-          `<div class="grid">${card("Observed battery segments", num(a.battery_sec / 3600, 1, " h"))}${card("Observed AC segments", num(a.ac_sec / 3600, 1, " h"))}${card("Estimated high-charge exposure", num(h.full_pct_of_ac, 1, "% of AC time"), "Noncharging AC segments with both endpoints at least 95%.")}${card("Low-charge episodes", num(h.deep_discharges, 0), "Below 10%; counted again only after recovery to 20%.")}${card("Cycles added", num(h.cycles_30d, 0))}${card("Average charging power", num(a.avg_charge_watts, 1, " W"))}</div><p class="note">Endpoint-based exposure is an estimate, not exact time at full charge. Overnight charging alone is not treated as a problem. Missing observations limit episode counts.</p><section class="evidence-panel"><p class="eyebrow">Observed charge exposure · Last 24 hours</p><h2>How long at higher charge?</h2><div class="grid">${card("At least 80%", num(ex.above_80_h, 2, " h"))}${card("At least 90%", num(ex.above_90_h, 2, " h"))}${card("At least 95%", num(ex.above_95_h, 2, " h"))}${card("Charging temperature", sensorValue(ex.avg_charging_temp_c, "battery_temp", 1, " °C"), sensorNote(ex.avg_charging_temp_c, "battery_temp", `${num(ex.charging_temp_observed_h, 2)} charging hours with a sensor reading`))}</div><p class="note">${num(ex.soc_observed_h, 2)} hours with observed charge level; ${num(ex.temp_observed_h, 2)} hours with a battery temperature reading. A short observed interval counts only when both endpoint readings meet the threshold; this is a conservative exposure estimate, not exact crossing time. Thresholds overlap and are not additive. Gaps are excluded, not assumed cool or low-charge. These recent sensor observations are separate from the 30-day endpoint estimate above.</p></section><h2>Recent segments</h2><label><input id="short-toggle" type="checkbox" ${hideShort ? "checked" : ""}> Hide closed segments shorter than 5 minutes</label><p class="note">Sleep and collector restarts can split a segment. These rows are not physical battery cycles. Showing up to 100 of ${sessions.length} matching segments.</p>${table(["Power state", "Start", "Duration", "Charge", "Battery energy"], rows)}`,
+          "Charging sources and sessions",
+          "Understand your connected source, compare setups and find recurring charging behavior.",
+        ) + chargerWidgets.markup(chargerData) + `<details id="charging-legacy" class="evidence-details"><summary>Battery habits and older power-state segments</summary>` +
+          `<div class="grid">${card("Observed battery segments", num(a.battery_sec / 3600, 1, " h"))}${card("Observed AC segments", num(a.ac_sec / 3600, 1, " h"))}${card("Estimated high-charge exposure", num(h.full_pct_of_ac, 1, "% of AC time"), "Noncharging AC segments with both endpoints at least 95%.")}${card("Low-charge episodes", num(h.deep_discharges, 0), "Below 10%; counted again only after recovery to 20%.")}${card("Cycles added", num(h.cycles_30d, 0))}${card("Average charging power", num(a.avg_charge_watts, 1, " W"))}</div><p class="note">Endpoint-based exposure is an estimate, not exact time at full charge. Overnight charging alone is not treated as a problem. Missing observations limit episode counts.</p><section class="evidence-panel"><p class="eyebrow">Observed charge exposure · Last 24 hours</p><h2>How long at higher charge?</h2><div class="grid">${card("At least 80%", num(ex.above_80_h, 2, " h"))}${card("At least 90%", num(ex.above_90_h, 2, " h"))}${card("At least 95%", num(ex.above_95_h, 2, " h"))}${card("Charging temperature", sensorValue(ex.avg_charging_temp_c, "battery_temp", 1, " °C"), sensorNote(ex.avg_charging_temp_c, "battery_temp", `${num(ex.charging_temp_observed_h, 2)} charging hours with a sensor reading`))}</div><p class="note">${num(ex.soc_observed_h, 2)} hours with observed charge level; ${num(ex.temp_observed_h, 2)} hours with a battery temperature reading. A short observed interval counts only when both endpoint readings meet the threshold; this is a conservative exposure estimate, not exact crossing time. Thresholds overlap and are not additive. Gaps are excluded, not assumed cool or low-charge. These recent sensor observations are separate from the 30-day endpoint estimate above.</p></section><h2>Recent segments</h2><label><input id="short-toggle" type="checkbox" ${hideShort ? "checked" : ""}> Hide closed segments shorter than 5 minutes</label><p class="note">Sleep and collector restarts can split a segment. These rows are not physical battery cycles. Showing up to 100 of ${sessions.length} matching segments.</p>${table(["Power state", "Start", "Duration", "Charge", "Battery energy"], rows)}</details>`,
       )
     )
       return;
+    if (!chargerData.available) $("#charging-legacy").open = true;
+    await chargerWidgets.bind(chargerData, {json,isCurrent:()=>id===renderId,refresh:()=>refresh(++renderId),setDays:n=>chargerDays=n});
+    if (id !== renderId) return;
     $("#short-toggle").addEventListener("change", (e) => {
       hideShort = e.target.checked; save("hideShort", hideShort);
       switchTab("charging");
@@ -893,7 +941,7 @@
         if (document.hidden || ($("#content").contains(document.activeElement) && isEditingControl(document.activeElement))) return;
         refresh(++renderId);
       },
-      tab === "now" ? 5000 : 60000,
+      tab === "now" ? 5000 : tab === "charging" ? 15000 : 60000,
     );
   }
   async function status() {

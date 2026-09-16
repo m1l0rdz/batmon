@@ -3,7 +3,11 @@ web/plugin/tests read via open_ro. Design doc section 6 + amendments D1-D4."""
 import os
 import sqlite3
 
-SCHEMA_VERSION = 4
+from batmond.cell_diagnostics import DDL as DIAGNOSTICS_DDL
+
+from batmond.chargers import DDL as CHARGERS_DDL
+
+SCHEMA_VERSION = 6
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(v INTEGER NOT NULL);
@@ -124,7 +128,7 @@ def open_rw(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-    conn.executescript(DDL)
+    conn.executescript(DDL + DIAGNOSTICS_DDL + CHARGERS_DDL)
     v_row = conn.execute("SELECT v FROM schema_version").fetchone()
     if v_row is None:
         conn.execute("INSERT INTO schema_version(v) VALUES (?)",
@@ -154,6 +158,13 @@ def open_rw(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE rollup_daily_battery ADD COLUMN avg_ssd_temp_c REAL")
         conn.execute("ALTER TABLE anomalies ADD COLUMN detail TEXT")
         conn.execute("UPDATE schema_version SET v=4")
+
+    if current_v < 5:
+        # Additive tables were created above. Never invent old cell readings.
+        conn.execute("UPDATE schema_version SET v=5")
+
+    if current_v < 6:
+        conn.execute("UPDATE schema_version SET v=6")
 
     conn.commit()
     ensure_readable(path)

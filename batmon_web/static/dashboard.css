@@ -584,3 +584,36 @@ footer { line-height: 1.8; padding-top: 20px; }
 @media (max-width: 650px) {
   .grid > .card:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
+
+/* Charger widgets follow the existing dashboard's density and colors. */
+.charger-panel { margin: 24px 0; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.charger-panel h2 { margin-top: 0; }
+.charger-title, .charger-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.charger-title h2 { margin-bottom: 0; }
+.charger-status { color: var(--accent); border: 1px solid var(--line); padding: 6px 10px; border-radius: 5px; }
+.charger-status.attention { color: var(--warm); }
+.charger-flow { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; margin: 20px 0; }
+.charger-flow .card { border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; padding: 12px 20px; }
+.charger-flow .card:first-child { padding-left: 0; }
+.charger-flow .card:last-child { border-right: 0; }
+.charger-toolbar { justify-content: flex-start; margin: 16px 0; }
+.charger-panel label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.charger-panel input, .charger-panel select { width: 100%; min-width: 0; padding: 9px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+.charger-labels { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; align-items: end; }
+.charger-labels button { justify-self: start; }
+.charger-detail { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.charger-compare-controls { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; margin: 20px 0; }
+.charger-panel .selected-row { background: #22332e; }
+.charger-panel td { vertical-align: top; }
+.charger-panel td .note { margin: 4px 0; }
+.charger-panel td:first-child { min-width: 210px; max-width: 320px; overflow-wrap: anywhere; }
+.charger-panel td button { text-align: left; overflow-wrap: anywhere; }
+.charger-observation { color: var(--warm); border-left: 2px solid var(--warm); padding-left: 12px; }
+.charger-panel button:disabled { opacity: .4; cursor: default; }
+@media (max-width: 700px) {
+  .charger-panel { padding: 16px; }
+  .charger-flow, .charger-labels, .charger-compare-controls { grid-template-columns: 1fr; }
+  .charger-flow .card { padding: 12px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .charger-flow .card:last-child { border-bottom: 0; }
+  .charger-toolbar > label { width: 100%; }
+}

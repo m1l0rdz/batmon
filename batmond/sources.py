@@ -6,6 +6,10 @@ them tasks have no energy_impact and attribution is all zeros
 from __future__ import annotations
 
 import subprocess
+from functools import lru_cache
+import time
+
+from batmond.parsers.charge_policy import read_policy
 from pathlib import Path
 
 from batmond.parsers.smc import read_battery_extras
@@ -22,6 +26,24 @@ PMSET_CMD = ["/usr/bin/pmset", "-g", "assertions"]
 
 
 class LiveSource:
+    def charge_policy(self):
+        now = time.monotonic()
+        if now >= getattr(self, '_policy_next', 0):
+            self._policy = read_policy()
+            self._policy_next = now + 60
+        return self._policy
+
+    @lru_cache(maxsize=1)
+    def charger_model(self):
+        try:
+            model = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'hw.model'], timeout=3).decode().strip()
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        # Verified Apple model mapping; unknown models get no inferred wattage.
+        if model == 'Mac16,8':
+            return dict(identifier=model,name='MacBook Pro 14-inch (M4 Pro, 2024)',fast_charge_reference_w=96)
+        return dict(identifier=model)
+
     def powermetrics_burst(self) -> bytes:
         return subprocess.run(POWERMETRICS_CMD, capture_output=True,
                               timeout=30, check=True).stdout
@@ -53,6 +75,12 @@ class LiveSource:
 
 
 class FixtureSource:
+    def charge_policy(self):
+        return {}
+
+    def charger_model(self):
+        return {}
+
     def __init__(self, fixtures_dir: str):
         d = Path(fixtures_dir)
         self._pm = (d / "powermetrics_burst.plist").read_bytes()

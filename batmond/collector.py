@@ -13,6 +13,8 @@ from batmond.parsers.assertions import parse_assert_awake
 from batmond.parsers.brightness import parse_brightness
 from batmond.parsers.ioreg_battery import parse_ioreg_battery
 from batmond.parsers.powermetrics import average_burst, parse_burst
+from batmond import cell_diagnostics, chargers
+from batmond.parsers.charger import parse_charger
 from batmond.rollup import (day_key, prune, rollup_daily, rollup_hourly,
                             snapshot_health)
 from batmond.sessions import SessionTracker
@@ -95,7 +97,8 @@ class Collector:
 
     def _battery_step(self, now_ts):
         try:
-            s = parse_ioreg_battery(self.source.ioreg_battery(), now_ts)
+            raw_battery = self.source.ioreg_battery()
+            s = parse_ioreg_battery(raw_battery, now_ts)
             if s.temp_c is None:
                 # macOS 27.0 dropped ioreg Temperature; the HID fuel-gauge
                 # sensor still reports it. A failed read leaves it unknown.
@@ -122,6 +125,18 @@ class Collector:
                 (s.ts, s.soc_pct, s.current_ma, s.voltage_mv, s.watts,
                  int(s.is_charging), int(s.on_ac), s.temp_c, brightness,
                  int(awake)))
+            cell_diagnostics.record(self.conn, s)
+            # Optional charger telemetry cannot interrupt core battery collection.
+            self.conn.execute('SAVEPOINT charger_sample')
+            try:
+                observation = parse_charger(raw_battery)
+                observation['model'] = self.source.charger_model()
+                chargers.record(self.conn, s, observation, self.source.charge_policy())
+            except Exception:
+                self.conn.execute('ROLLBACK TO charger_sample')
+                log.exception('charger observation failed')
+            finally:
+                self.conn.execute('RELEASE charger_sample')
             db_mod.set_state(self.conn, "health_now", json.dumps({
                 "ts": s.ts, "cycle_count": s.cycle_count,
                 "max_capacity_pct": s.max_capacity_pct,

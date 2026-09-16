@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from batmond.db import open_ro
-from batmon_web import queries
+from batmon_web import queries, cell_diagnostics, chargers
 from batmon_web import advisor, insights, workbench
 from batmon_web.awake import AwakeManager
 
@@ -150,10 +150,35 @@ def create_app(db_path: str,
         with db() as conn:
             return queries.health(conn)
 
+    @app.get("/api/health/cells")
+    def cell_history(range: Literal["24h", "7d", "30d", "90d", "1y"] = "24h"):
+        with db() as conn:
+            return cell_diagnostics.history(conn, int(time.time()), range)
+
     @app.get("/api/health/forecast")
     def health_forecast():
         with db() as conn:
             return queries.health_prediction(conn)
+
+    @app.get("/api/chargers")
+    def charger_overview(days: int = 30):
+        if days not in (7, 30, 90):
+            raise HTTPException(422, 'days must be 7, 30 or 90')
+        with db() as conn:
+            return chargers.overview(conn, int(time.time()), days)
+
+    @app.get("/api/chargers/sessions/{session_id}")
+    def charger_session(session_id: int):
+        with db() as conn:
+            data = chargers.session(conn, session_id)
+            if data is None:
+                raise HTTPException(404, 'session not found')
+            return data
+
+    @app.get("/api/chargers/compare")
+    def charger_compare(a: int, b: int):
+        with db() as conn:
+            return chargers.compare(conn, a, b)
 
     @app.get("/api/charging")
     def charging():

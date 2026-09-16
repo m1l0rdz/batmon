@@ -70,7 +70,7 @@ def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str |
             advice = "A background app woke the Mac during sleep - quit it or check Login Items."
             
         elif kind == "__SYSTEM_WEAK_CHARGER__":
-            advice = "Adapter/cable can't outpace the load - use a higher-wattage USB-C charger, check the cable, or close heavy apps while charging."
+            advice = "Battery supplied power while connected. Check Charging for session evidence, reduce load or compare another USB-C charger/cable. macOS may also intentionally draw on the battery."
             
         elif kind == "__SYSTEM_FULL_PLUGGED__":
             advice = "Battery held at ~100% on AC for 3+ hours - this is the main aging driver. Unplug, or enable the native 80% charge limit (System Settings > Battery > Charging)."
@@ -192,8 +192,13 @@ def check_system_anomalies(conn, now_ts: int, tz=None) -> list[int]:
         SELECT COUNT(*), AVG(watts) FROM battery_samples
         WHERE ts >= ? AND on_ac = 1
     """, (now_ts - 15 * 60,)).fetchone()
-    if row and row[0] >= 20 and row[1] is not None and row[1] < -5.0:
-        deficit = abs(row[1])
+    from batmond.chargers import assessment as charger_assessment
+    source_evidence = charger_assessment(conn, now_ts)
+    weak = (source_evidence['assessment']['code'] == 'battery_assisting'
+            if source_evidence is not None else
+            bool(row and row[0] >= 20 and row[1] is not None and row[1] < -5.0))
+    if weak:
+        deficit = abs(row[1]) if row and row[1] is not None else abs(source_evidence['watts'])
         detail = build_detail(conn, "__SYSTEM_WEAK_CHARGER__", now_ts, tz)
         cur = conn.execute(
             "INSERT OR IGNORE INTO anomalies(ts, day, app, wh_today, wh_baseline, ratio, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",

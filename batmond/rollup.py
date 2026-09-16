@@ -4,6 +4,7 @@ for tests; None = system local). Hours are bucketed into days by
 day_key(hour_start): DST days get 23 or 25 hourly rows, correctly."""
 from datetime import datetime
 
+from batmond import cell_diagnostics
 from batmond.db import get_state, set_state
 from batmond.sessions import integrate
 
@@ -33,6 +34,7 @@ def rollup_hourly(conn, now_ts: int) -> None:
 
 
 def _roll_one_hour(conn, hour: int) -> None:
+    cell_diagnostics.roll_hour(conn, hour)
     end = hour + 3600
     agg = conn.execute(
         "SELECT MIN(soc_pct), MAX(soc_pct), AVG(watts), AVG(brightness_pct), AVG(temp_c)"
@@ -77,6 +79,7 @@ def rollup_daily(conn, now_ts: int, tz=None) -> None:
         if d < today:
             days.setdefault(d, []).append(hour)
     for d, hlist in days.items():
+        cell_diagnostics.roll_day(conn, d, hlist)
         ph = ",".join("?" * len(hlist))
         conn.execute(
             f"INSERT OR REPLACE INTO rollup_daily_battery"
@@ -95,12 +98,16 @@ def rollup_daily(conn, now_ts: int, tz=None) -> None:
 
 
 def prune(conn, now_ts: int) -> None:
+    from batmond.chargers import prune as prune_chargers
+    prune_chargers(conn, now_ts)
     raw_cut = now_ts - RAW_KEEP_SEC
+    conn.execute("DELETE FROM battery_diagnostics_samples WHERE ts < ?", (raw_cut,))
     conn.execute("DELETE FROM battery_samples WHERE ts < ?", (raw_cut,))
     conn.execute("DELETE FROM app_energy WHERE ts_minute < ?", (raw_cut,))
     conn.execute("DELETE FROM component_power WHERE ts_minute < ?",
                  (raw_cut,))
     hourly_cut = now_ts - HOURLY_KEEP_SEC
+    conn.execute("DELETE FROM battery_diagnostics_hourly WHERE hour < ?", (hourly_cut,))
     conn.execute("DELETE FROM rollup_hourly_battery WHERE hour < ?",
                  (hourly_cut,))
     conn.execute("DELETE FROM rollup_hourly_apps WHERE hour < ?",
