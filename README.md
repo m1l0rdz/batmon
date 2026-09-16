@@ -2,14 +2,15 @@
   <img src="docs/batmon-cover.svg" alt="batmon - Know your battery. Own your workday." width="100%">
 </p>
 
-<h1 align="center">Your battery percentage has a backstory.</h1>
+<h1 align="center">batmon: battery monitor for Apple Silicon MacBooks</h1>
 
 <p align="center">
   <strong>Find the activity behind the drain. Plan your time away from a charger.<br>Understand how your MacBook's battery changes over time.</strong>
 </p>
 
 <p align="center">
-  A native menu bar companion and a detailed local dashboard for Apple Silicon MacBooks.<br>
+  Free, open-source battery monitoring with a native menu bar app and a local dashboard.<br>
+  App energy estimates. Runtime forecasts. Battery health history.<br>
   No account. No cloud service. No subscription.
 </p>
 
@@ -64,7 +65,7 @@ A **Keep awake** switch is there for long-running work. It prevents idle sleep w
 
 ## Install
 
-**Built for Apple Silicon MacBooks.** Verified on a MacBook Pro M4 Pro running macOS 26.5. Other Apple Silicon/macOS combinations may expose different sensors and have not all been validated. Intel Macs are not supported.
+**Built for Apple Silicon MacBooks.** Developed and checked on a MacBook Pro M4 Pro, including macOS 26.5 and 27.0. Other Apple Silicon/macOS combinations may expose different sensors and have not all been validated. Intel Macs are not supported.
 
 You need Git, a working `python3` with `venv` and `pip`, and Apple's Command Line Tools Python at `/usr/bin/python3` for the collector. If Command Line Tools are missing, run `xcode-select --install` and finish Apple's installer first.
 
@@ -104,6 +105,12 @@ To remove the background services and installed collector while keeping your his
 To also **permanently delete the collected history**, use `./uninstall.sh --purge` instead. The cloned project folder and its virtual environment remain in place.
 
 </details>
+
+## Help test your MacBook
+
+Trying batmon on another Apple Silicon MacBook? [Share a compatibility report](https://github.com/m1l0rdz/batmon/issues/new?title=Compatibility%20report). Include your Mac model and chip, macOS version, whether installation succeeded, and any missing readings. A successful install is useful feedback too.
+
+If something fails, include the error message and what you expected to happen. Review logs and screenshots for personal information before sharing; you do not need to upload your battery database.
 
 ## Private by design
 
