@@ -163,11 +163,15 @@ def read_raw_sensors() -> list[tuple[str, float]]:
 
 def aggregate_temps(sensors: list[tuple[str, float]]) -> dict[str, float | None]:
     """
-    Extracts soc_temp_c (max of 'PMU tdie*') and ssd_temp_c (max of '*NAND*').
-    Filters out extreme/invalid values (<=0 or >=130).
+    Extracts soc_temp_c (max of 'PMU tdie*'), ssd_temp_c (max of '*NAND*')
+    and battery_temp_c (max of 'gas gauge battery', the fuel-gauge sensors;
+    verified on M4 Pro / macOS 27.0, where ioreg no longer reports
+    Temperature). Filters out extreme/invalid values (<=0 or >=130); the gas
+    gauge is known to read 0 when it has no reading.
     """
     soc_temps = []
     ssd_temps = []
+    battery_temps = []
     
     for name, temp in sensors:
         if not (0 < temp < 130):
@@ -177,8 +181,11 @@ def aggregate_temps(sensors: list[tuple[str, float]]) -> dict[str, float | None]
             soc_temps.append(temp)
         elif "NAND" in name:
             ssd_temps.append(temp)
+        elif name == "gas gauge battery":
+            battery_temps.append(temp)
             
     return {
         "soc_temp_c": max(soc_temps) if soc_temps else None,
-        "ssd_temp_c": max(ssd_temps) if ssd_temps else None
+        "ssd_temp_c": max(ssd_temps) if ssd_temps else None,
+        "battery_temp_c": max(battery_temps) if battery_temps else None,
     }

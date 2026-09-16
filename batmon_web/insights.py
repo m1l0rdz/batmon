@@ -100,7 +100,7 @@ def health_summary(conn, now_ts):
         reason = 'Weekly median trend passes the quality gate. It is an observation, not a battery lifetime guarantee.'
     cur = median(recent) if len(recent) >= 4 else None
     prev = median(prior) if len(prior) >= 4 else None
-    return dict(**system_health.read_health(now_ts // 600),
+    return dict(**system_health.read_health(now_ts),
                 current_raw_pct=latest.get('max_capacity_pct'),
                 median_7d_pct=cur, previous_7d_pct=prev,
                 change_pp=cur - prev if cur is not None and prev is not None else None,
@@ -180,28 +180,6 @@ def runtime_estimate(conn, now_ts, reserve_pct=20):
     return out
 
 
-def low_charge_episodes(conn, start, end):
-    """Re-arm at 20%; sleep fragments below 10% remain one observed episode."""
-    armed = True
-    count = 0
-    latest = queries.latest_sample(conn)
-    for started, ended, soc_start, soc_end, kind in conn.execute(
-            'SELECT started, ended, soc_start, soc_end, kind FROM sessions '
-            'WHERE started < ? ORDER BY started, id', (end,)):
-        if ended is None and latest and latest['ts'] >= started:
-            ended, soc_end = latest['ts'], latest['soc_pct']
-        for ts, soc in ((started, soc_start), (ended, soc_end)):
-            if ts is None or soc is None or ts >= end:
-                continue
-            if soc >= 20:
-                armed = True
-            elif soc < 10 and armed:
-                if start <= ts and kind == 'battery':
-                    count += 1
-                armed = False
-    return count
-
-
 def power_events(conn, start, end):
     """Observed state transitions only; gaps and restarts are not plug events."""
     rows = conn.execute(
@@ -237,7 +215,7 @@ def report_context(conn, start, end):
         'WHERE hour>=? AND hour<? AND avg_temp_c IS NOT NULL', (start, end)).fetchone()
     return dict(sessions_battery=counts.get('battery', 0),
                 sessions_charging=counts.get('charging', 0) + counts.get('full', 0),
-                deep_discharges=low_charge_episodes(conn, start, end),
+                deep_discharges=queries.low_charge_episodes(conn, start, end),
                 anomaly_count=conn.execute('SELECT COUNT(*) FROM anomalies WHERE ts>=? AND ts<?',
                                            (start, end)).fetchone()[0],
                 avg_temp_c=temp[0] / temp[1] if temp[1] else None)

@@ -28,15 +28,22 @@ class BatterySample:
     on_ac: bool
     temp_c: Optional[float]
     cycle_count: int
-    design_capacity_mah: float
-    raw_max_capacity_mah: float
-    raw_current_capacity_mah: float
-    max_capacity_pct: float
+    design_capacity_mah: Optional[float]
+    raw_max_capacity_mah: Optional[float]
+    raw_current_capacity_mah: Optional[float]
+    max_capacity_pct: Optional[float]
     cell_voltage_mv: Optional[Tuple[int, ...]] = None
     lifetime_temp_min: Optional[float] = None
     lifetime_temp_max: Optional[float] = None
     lifetime_temp_avg: Optional[float] = None
     operating_time_hours: Optional[float] = None
+
+
+def _mah(*candidates) -> Optional[float]:
+    for value in candidates:
+        if value:
+            return float(value)
+    return None
 
 
 def parse_ioreg_battery(raw: bytes, ts: int) -> BatterySample:
@@ -46,9 +53,12 @@ def parse_ioreg_battery(raw: bytes, ts: int) -> BatterySample:
     voltage_mv = float(d["Voltage"])
     watts = amperage / 1000.0 * (voltage_mv / 1000.0)
     battery_data = d.get("BatteryData", {})
-    design = float(d.get("DesignCapacity") or battery_data.get("DesignCapacity"))
-    raw_max = float(d.get("AppleRawMaxCapacity", battery_data.get("FullChargeCapacity", d.get("MaxCapacity"))))
-    raw_cur = float(d.get("AppleRawCurrentCapacity", battery_data.get("RemainingCapacity", d.get("CurrentCapacity"))))
+    # Root MaxCapacity/CurrentCapacity are percent on Apple Silicon (D2):
+    # never use them as mAh. Missing mAh stays unknown instead of failing
+    # the whole sample (charge and power are still valid).
+    design = _mah(d.get("DesignCapacity"), battery_data.get("DesignCapacity"))
+    raw_max = _mah(d.get("AppleRawMaxCapacity"), battery_data.get("FullChargeCapacity"))
+    raw_cur = _mah(d.get("AppleRawCurrentCapacity"), battery_data.get("RemainingCapacity"))
     temp = d.get("Temperature")
     
     cell_volts = d.get("BatteryData", {}).get("CellVoltage")
@@ -76,7 +86,7 @@ def parse_ioreg_battery(raw: bytes, ts: int) -> BatterySample:
         design_capacity_mah=design,
         raw_max_capacity_mah=raw_max,
         raw_current_capacity_mah=raw_cur,
-        max_capacity_pct=raw_max / design * 100.0 if design else 0.0,
+        max_capacity_pct=raw_max / design * 100.0 if design and raw_max else None,
         cell_voltage_mv=cell_volts,
         lifetime_temp_min=float(lt_min) if lt_min is not None else None,
         lifetime_temp_max=float(lt_max) if lt_max is not None else None,

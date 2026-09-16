@@ -30,8 +30,11 @@ class Forecaster:
             if mode == "battery":
                 remaining = s.raw_current_capacity_mah
             else:
-                remaining = s.raw_max_capacity_mah - s.raw_current_capacity_mah
-            minutes = int(remaining / self._ema_ma * 60)
+                remaining = (s.raw_max_capacity_mah - s.raw_current_capacity_mah
+                             if s.raw_max_capacity_mah is not None
+                             and s.raw_current_capacity_mah is not None else None)
+            if remaining is not None:
+                minutes = int(remaining / self._ema_ma * 60)
         return {"mode": mode, "minutes": minutes}
 
 

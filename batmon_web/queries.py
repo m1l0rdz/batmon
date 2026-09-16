@@ -260,6 +260,28 @@ def energy(conn, rng: str, now_ts: int):
     return out
 
 
+# Minimum recent readings before a sensor that never reported counts as
+# unsupported rather than briefly missing: ~5 min of 15 s samples, 5 bursts.
+SENSOR_MIN_ROWS = {"battery_samples": 20, "component_power": 5}
+SENSORS = (("battery_temp", "battery_samples", "ts", "temp_c"),
+           ("chip_temp", "component_power", "ts_minute", "soc_temp_c"),
+           ("ssd_temp", "component_power", "ts_minute", "ssd_temp_c"))
+
+
+def sensor_support(conn, now_ts: int, window: int = 3600):
+    """'ok' | 'missing' (too few readings to judge) | 'unsupported' (the OS
+    reported nothing across a full recent window)."""
+    import platform
+    out = {"os_version": platform.mac_ver()[0] or None}
+    for name, table, ts_col, col in SENSORS:
+        rows, values = conn.execute(
+            f"SELECT COUNT(*), COUNT({col}) FROM {table} WHERE {ts_col} >= ?",
+            (now_ts - window,)).fetchone()
+        out[name] = ("ok" if values else
+                     "unsupported" if rows >= SENSOR_MIN_ROWS[table] else "missing")
+    return out
+
+
 def status(conn, now_ts: int):
     hb = conn.execute(
         "SELECT value FROM state WHERE key='heartbeat'").fetchone()
@@ -274,6 +296,7 @@ def status(conn, now_ts: int):
             "last_powermetrics_ts": last_pm,
             "rollup_hourly_done": int(rolled[0]) if rolled else None,
             "forecast": forecast(conn),
+            "sensors": sensor_support(conn, now_ts),
             "now_ts": now_ts}
 
 
@@ -340,6 +363,28 @@ def anomalies_since(conn, since_id: int):
     return results
 
 
+def low_charge_episodes(conn, start, end):
+    """Re-arm at 20%; sleep fragments below 10% remain one observed episode."""
+    armed = True
+    count = 0
+    latest = latest_sample(conn)
+    for started, ended, soc_start, soc_end, kind in conn.execute(
+            'SELECT started, ended, soc_start, soc_end, kind FROM sessions '
+            'WHERE started < ? ORDER BY started, id', (end,)):
+        if ended is None and latest and latest['ts'] >= started:
+            ended, soc_end = latest['ts'], latest['soc_pct']
+        for ts, soc in ((started, soc_start), (ended, soc_end)):
+            if ts is None or soc is None or ts >= end:
+                continue
+            if soc >= 20:
+                armed = True
+            elif soc < 10 and armed:
+                if start <= ts and kind == 'battery':
+                    count += 1
+                armed = False
+    return count
+
+
 OVERNIGHT_MIN_SEC = 2 * 3600  # ignore short evening top-ups
 
 
@@ -349,7 +394,6 @@ def charging_habits(conn, now_ts: int) -> dict:
     High-charge exposure is an endpoint-based estimate over noncharging AC
     segments with both endpoints >=95%; it cannot resolve within-segment dips.
     """
-    from batmon_web.insights import low_charge_episodes
     since = now_ts - 30 * 86400
     last = latest_sample(conn)
     live_end = min(now_ts, last["ts"]) if last else now_ts

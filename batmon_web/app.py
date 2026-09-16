@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -31,6 +31,7 @@ def create_app(db_path: str,
                caffeinate_bin: str = "/usr/bin/caffeinate") -> FastAPI:
     app = FastAPI(title="batmon")
     awake = AwakeManager(binary=caffeinate_bin)
+    recent_cache = {}
 
     @contextmanager
     def db():
@@ -46,7 +47,8 @@ def create_app(db_path: str,
             conn.close()
 
     @app.get("/api/now")
-    def now(reserve: int = Query(default=20, ge=10, le=30)):
+    def now(reserve: int = 20):
+        # Literal[int] rejects query strings in this pydantic; one whitelist.
         if reserve not in (10, 20, 30):
             raise HTTPException(422, 'reserve must be 10, 20 or 30')
         with db() as conn:
@@ -117,11 +119,20 @@ def create_app(db_path: str,
         return d
 
     @app.get("/api/workbench")
-    def workbench_view(hours: int = Query(default=24, ge=24, le=48)):
+    def workbench_view(hours: int = 24):
         if hours not in (24, 48):
             raise HTTPException(422, 'hours must be 24 or 48')
+        now_ts = int(time.time())
+        # Raw samples arrive every 15 s and views poll every minute: reuse one
+        # computation per minute instead of rescanning all retained rows.
+        key = (hours, now_ts // 60)
+        hit = recent_cache.get(hours)
+        if hit is not None and hit[0] == key:
+            return hit[1]
         with db() as conn:
-            return workbench.recent_observations(conn, int(time.time()), hours)
+            value = workbench.recent_observations(conn, now_ts, hours)
+        recent_cache[hours] = (key, value)
+        return value
 
     @app.get("/api/experiment")
     def experiment_view(start: int, split: int, end: int):

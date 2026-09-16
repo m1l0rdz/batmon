@@ -96,6 +96,13 @@ class Collector:
     def _battery_step(self, now_ts):
         try:
             s = parse_ioreg_battery(self.source.ioreg_battery(), now_ts)
+            if s.temp_c is None:
+                # macOS 27.0 dropped ioreg Temperature; the HID fuel-gauge
+                # sensor still reports it. A failed read leaves it unknown.
+                try:
+                    s.temp_c = self.source.temps().get("battery_temp_c")
+                except Exception:
+                    log.exception("battery temperature read failed")
             brightness = parse_brightness(self.source.brightness_text())
             awake = parse_assert_awake(self.source.assertions_text())
             self.conn.execute(
