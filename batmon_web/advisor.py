@@ -1,19 +1,9 @@
-"""Battery Score and recommendation rules. Pure functions over dicts
-produced by queries.py - no DB access, so tests run without SQLite.
-Weights and thresholds are module constants: tune here, nowhere else."""
+"""Transparent habit heuristic, not a hardware diagnosis or lifetime model."""
+from batmond.anomalies import SYSTEM_DAEMONS
 
-W_CAPACITY = 35   # design-capacity health
-W_FULL = 25       # time held at full while plugged
-W_TEMP = 20       # average battery temperature
-W_DEEP = 10       # deep discharges
-W_OVERNIGHT = 10  # overnight charging nights
-
-CAP_FLOOR = 80.0        # max_capacity_pct at which capacity points hit 0
-FULL_PCT_ZERO = 50.0    # % of AC time at full at which points hit 0
-TEMP_FULL_C = 32.0      # avg temp at/below which temp points are full
-TEMP_ZERO_C = 40.0      # avg temp at/above which temp points hit 0
-DEEP_ZERO = 5           # deep discharges in 30d at which points hit 0
-OVERNIGHT_ZERO = 10     # overnight charges in 30d at which points hit 0
+CHARGING_SOURCE = 'https://support.apple.com/en-au/102338'
+ENERGY_SOURCE = 'https://support.apple.com/en-ca/guide/activity-monitor/actmntr43697/mac'
+CARE_SOURCE = 'https://www.apple.com/batteries/maximizing-performance/'
 
 
 def _clamp01(x):
@@ -21,129 +11,83 @@ def _clamp01(x):
 
 
 def compute_score(habits, health_history):
+    # health_history is retained for callers; wear is not a user habit.
     parts = []
-
-    cap = None
-    if health_history:
-        cap = health_history[-1].get("max_capacity_pct")
-    if cap is not None:
-        f = _clamp01((cap - CAP_FLOOR) / (100.0 - CAP_FLOOR))
-        parts.append({"name": "Battery health", "points": round(f * W_CAPACITY, 1),
-                      "max": W_CAPACITY,
-                      "why": "capacity at %.0f%% of design" % cap})
-
-    fp = habits.get("full_pct_of_ac")
+    observed = habits.get('observed_h', 0)
+    fp = habits.get('full_pct_of_ac')
     if fp is not None:
-        f = _clamp01(1.0 - fp / FULL_PCT_ZERO)
-        parts.append({"name": "Time at full charge", "points": round(f * W_FULL, 1),
-                      "max": W_FULL,
-                      "why": "%.0f%% of plugged time spent at 100%%" % fp})
-
-    t = habits.get("avg_temp_c")
-    if t is not None:
-        f = _clamp01((TEMP_ZERO_C - t) / (TEMP_ZERO_C - TEMP_FULL_C))
-        parts.append({"name": "Temperature", "points": round(f * W_TEMP, 1),
-                      "max": W_TEMP,
-                      "why": "30-day average %.1f C" % t})
-
-    deep = habits.get("deep_discharges")
-    if deep is not None:
-        f = _clamp01(1.0 - float(deep) / DEEP_ZERO)
-        parts.append({"name": "Deep discharges", "points": round(f * W_DEEP, 1),
-                      "max": W_DEEP,
-                      "why": "%d discharges below 10%% in 30 days" % deep})
-
-    on = habits.get("overnight_sessions")
-    if on is not None:
-        f = _clamp01(1.0 - float(on) / OVERNIGHT_ZERO)
-        parts.append({"name": "Overnight charging", "points": round(f * W_OVERNIGHT, 1),
-                      "max": W_OVERNIGHT,
-                      "why": "%d overnight charge sessions in 30 days" % on})
-
-    denom = sum(p["max"] for p in parts)
-    if denom == 0:
-        return {"score": None, "grade": None, "components": []}
-    score = int(round(sum(p["points"] for p in parts) / denom * 100.0))
-    if score >= 90:
-        grade = "excellent"
-    elif score >= 75:
-        grade = "good"
-    elif score >= 50:
-        grade = "fair"
-    else:
-        grade = "poor"
-    return {"score": score, "grade": grade, "components": parts}
-
-R_OVERNIGHT = 5
-R_FULL_PCT = 30.0
-R_HOT_C = 35.0
-R_DEEP = 3
-R_AC_SHARE = 95.0
-R_APP_SHARE = 40.0
-R_BRIGHTNESS = 80.0
-
-_SEV_ORDER = ("high", "medium", "low")
+        parts.append(dict(name='High-charge exposure',
+                          points=round(_clamp01(1 - fp / 50) * 60, 1), max=60,
+                          why='%.1f%% of observed AC segment time held at >=95%% (endpoint estimate)' % fp))
+    deep = habits.get('deep_discharges')
+    if deep is not None and observed > 0:
+        parts.append(dict(name='Low-charge episodes',
+                          points=round(_clamp01(1 - deep / 5) * 40, 1), max=40,
+                          why='%d observed episodes below 10%% in 30 days; re-armed at 20%%' % deep))
+    available = sum(p['max'] for p in parts)
+    result = dict(score=None, grade=None, components=parts,
+                  available_weight=available, observed_h=observed,
+                  score_kind='habits')
+    if observed < 24 or not available:
+        return result
+    score = round(sum(p['points'] for p in parts) / available * 100)
+    grade = 'excellent' if score >= 90 else 'good' if score >= 75 else 'fair' if score >= 50 else 'poor'
+    return dict(result, score=score, grade=grade)
 
 
 def recommendations(ctx):
-    h = ctx.get("habits") or {}
+    h = ctx.get('habits') or {}
     recs = []
-    charge_limit = ctx.get("charge_limit") or {}
-    limit_protecting = charge_limit.get("holding") is True
+    protecting = (ctx.get('charge_limit') or {}).get('holding') is True
 
-    on = h.get("overnight_sessions") or 0
-    if on >= R_OVERNIGHT and not limit_protecting:
-        recs.append({"id": "overnight_full", "severity": "high",
-                     "title": "Charging overnight at 100%",
-                     "body": "%d overnight charge sessions in 30 days. Holding a full battery for hours is the main aging driver - enable the native 80%% charge limit in System Settings > Battery > Charging." % on})
+    def add(key, severity, title, body, action, target, source):
+        recs.append(dict(id=key, severity=severity, title=title, body=body,
+                         action=action, target_tab=target, source_url=source))
 
-    fp = h.get("full_pct_of_ac")
-    if fp is not None and fp > R_FULL_PCT:
-        if limit_protecting:
-            recs.append({"id": "charge_limit_recovery", "severity": "low",
-                         "title": "80% charge limit is protecting the battery",
-                         "body": "%.0f%% of plugged-in time was spent at 100%% in the rolling 30-day history, but today's 80%% ceiling shows the limit is now protecting the battery. Keep it enabled; this historical metric and score will normalize." % fp})
+    fp = h.get('full_pct_of_ac')
+    if fp is not None and fp > 30:
+        if protecting:
+            add('charge_limit_recovery', 'low', 'A charge limit is enabled',
+                'Historical high-charge exposure is %.1f%% of observed AC segment time. This is an endpoint estimate; your current charge-limit policy is enabled.' % fp,
+                'Keep the limit if it suits your daily runtime; review the actual value in Battery settings.',
+                'charging', CHARGING_SOURCE)
         else:
-            recs.append({"id": "parked_at_full", "severity": "high",
-                         "title": "Battery parked at full charge",
-                         "body": "%.0f%% of plugged-in time is spent at 100%%. Enable the 80%% charge limit or unplug once charged." % fp})
-
-    t = h.get("avg_temp_c")
-    if t is not None and t > R_HOT_C:
-        recs.append({"id": "hot_battery", "severity": "medium",
-                     "title": "Battery runs hot",
-                     "body": "30-day average battery temperature is %.1f C (wear accelerates above 35 C). Avoid soft surfaces and direct sun; check the Apps tab for heavy processes while charging." % t})
-
-    deep = h.get("deep_discharges") or 0
-    if deep >= R_DEEP:
-        recs.append({"id": "deep_discharges", "severity": "medium",
-                     "title": "Frequent deep discharges",
-                     "body": "%d discharges below 10%% in 30 days. Plugging in around 20%% is gentler on the cell." % deep})
-
-    ac = h.get("ac_share_pct")
-    if ac is not None and ac > R_AC_SHARE:
-        recs.append({"id": "battery_unused", "severity": "low",
-                     "title": "Battery almost never used",
-                     "body": "Plugged in %.0f%% of the time. With the Mac docked, the 80%% charge limit costs nothing and slows aging." % ac})
-
-    top = ctx.get("top_apps") or []
-    if top and (top[0].get("share_pct") or 0) > R_APP_SHARE:
+            add('parked_at_full', 'medium', 'Reduce prolonged high charge',
+                'About %.1f%% of observed AC segment time was held at >=95%%. Nighttime charging alone is not a problem.' % fp,
+                'Use Optimized Battery Charging or a charge limit in Battery settings when usually plugged in.',
+                'charging', CHARGING_SOURCE)
+    deep = h.get('deep_discharges') or 0
+    if deep >= 3:
+        add('deep_discharges', 'medium', 'Plan a charging reserve',
+            '%d low-charge episodes were observed in 30 days. Sleep fragments below 10%% count as one episode until charge reaches 20%%.' % deep,
+            'For a practical runtime buffer, connect power around 20% when convenient. No deliberate full discharge is needed.',
+            'charging', CARE_SOURCE)
+    if (h.get('ac_share_pct') or 0) > 95 and not protecting:
+        add('mostly_docked', 'low', 'Mostly used on external power',
+            'External power accounts for %.0f%% of recorded time. There is no need to cycle the battery just to use it.' % h['ac_share_pct'],
+            'Review optimized charging and the charge limit in Battery settings.', 'charging', CHARGING_SOURCE)
+    top = ctx.get('top_apps') or []
+    if top and (top[0].get('share_pct') or 0) > 40:
         a = top[0]
-        recs.append({"id": "heavy_app", "severity": "medium",
-                     "title": "One app dominates energy use",
-                     "body": "%s used %.0f%% of attributed energy in the last 24h (%.1f Wh). Quit it when idle, or pause it from the Now tab." % (a["app"], a["share_pct"], a["attributed_wh"])})
-
-    culprit = ctx.get("frequent_culprit")
+        name = a['app']
+        # Daemons are lowercase single tokens ending in "d"; "Discord" or
+        # "Microsoft Word" are user apps.
+        system = (name in SYSTEM_DAEMONS or name in {'WindowServer', 'SystemUIServer', 'kernel_task'}
+                  or (name.islower() and ' ' not in name and name.endswith('d')))
+        add('heavy_app', 'medium', 'Review the leading chip-energy estimate',
+            '%s accounts for %.0f%% of the displayed chip-energy allocation (%.1f Wh, 24h, AC and battery combined). This is not measured whole-Mac energy.' % (a['app'], a['share_pct'], a['attributed_wh']),
+            'Compare Activity Monitor and the current workload. Do not stop system services.' if system else
+            'Save your work, reduce optional background tasks, then compare power under a similar workload.',
+            'apps', ENERGY_SOURCE)
+    culprit = ctx.get('frequent_culprit')
     if culprit:
-        recs.append({"id": "sleep_culprit", "severity": "medium",
-                     "title": "A process keeps waking the Mac in sleep",
-                     "body": "%s appeared in %d recent abnormal sleep-drain events. Quit it before closing the lid or check its background settings / Login Items." % (culprit["proc"], culprit["n"])})
-
-    br = ctx.get("avg_brightness_7d")
-    if br is not None and br > R_BRIGHTNESS:
-        recs.append({"id": "high_brightness", "severity": "low",
-                     "title": "Display brightness is high",
-                     "body": "7-day average brightness is %.0f%%. The display is a top battery consumer - a small reduction buys real runtime." % br})
-
-    recs.sort(key=lambda r: _SEV_ORDER.index(r["severity"]))
+        add('sleep_culprit', 'medium', 'Review activity during sleep gaps',
+            '%s appeared in %d abnormal sleep-gap records. Co-occurrence is evidence to investigate, not proof of the energy cause.' % (culprit['proc'], culprit['n']),
+            'Check background activity and connected peripherals before the next sleep interval.', 'anomalies', ENERGY_SOURCE)
+    br = ctx.get('avg_brightness_7d')
+    if br is not None and br > 80:
+        add('high_brightness', 'low', 'Try a lower display brightness',
+            'Mean recorded brightness is %.0f%% over 7 days. Brightness is a setting, not a measurement of display watts.' % br,
+            'Lower brightness to a comfortable level and compare battery draw during the same task.', 'energy', CARE_SOURCE)
+    recs.sort(key=lambda r: ('high', 'medium', 'low').index(r['severity']))
     return recs

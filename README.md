@@ -1,139 +1,155 @@
-<div align="center">
-  <img src="docs/batmon_app_icon.jpg" alt="Batmon Icon" width="128"/>
-  <h1>Batmon</h1>
-  <p><b>The ultimate macOS battery monitor, health tracker, and energy optimizer.</b></p>
-  <p>
-    <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS"/>
-    <img src="https://img.shields.io/badge/Apple%20Silicon-333333?style=flat-square&logo=apple&logoColor=white" alt="Apple Silicon"/>
-    <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"/>
-    <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI"/>
-    <img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite"/>
-    <img src="https://img.shields.io/badge/data-100%25%20local-00c853?style=flat-square" alt="100% local"/>
-  </p>
-</div>
+<p align="center">
+  <img src="docs/batmon-cover.svg" alt="batmon - Know your battery. Own your workday." width="100%">
+</p>
 
-> Discover exactly what is draining your MacBook's battery, track long-term health degradation, and extend your battery lifespan with intelligent charging advice.
+<h1 align="center">Your battery percentage has a backstory.</h1>
 
 <p align="center">
-  <img src="docs/batmon_macbook_mockup.jpg" alt="Batmon MacBook Dashboard" width="800"/>
+  <strong>Find the activity behind the drain. Plan your time away from a charger.<br>Understand how your MacBook's battery changes over time.</strong>
+</p>
+
+<p align="center">
+  A native menu bar companion and a detailed local dashboard for Apple Silicon MacBooks.<br>
+  No account. No cloud service. No subscription.
+</p>
+
+<p align="center">
+  <a href="#install">Install batmon</a> ·
+  <a href="#a-better-answer-to-three-everyday-questions">Explore the features</a> ·
+  <a href="#private-by-design">Privacy</a> ·
+  <a href="LICENSE">GPL-3.0</a>
 </p>
 
 ---
 
-## The Problem
+## A better answer to three everyday questions
 
-macOS tells you the battery percentage and occasionally gives a vague "using significant energy" warning in Activity Monitor. But what if you want to know:
-- **Why did my battery drain 20% while my MacBook was asleep?**
-- **Which specific app is secretly eating my battery right now?**
-- **Is my 80% charge limit actually working?**
-- **How many more cycles does my battery realistically have before it dies?**
-- **Is my MacBook overheating while charging?**
+### "Will I make it through the next meeting?"
 
-## Enter Batmon
+Choose a **10%, 20% or 30% reserve**, set how long you need to keep going, and compare your goal with a runtime range based on recent battery use. Keep charge and power in your menu bar; open the dashboard when you want the full picture.
 
-**Batmon** is a native battery and power monitor built exclusively for Apple Silicon Macs. It runs 100% locally on your machine—no cloud, no accounts, no telemetry—and provides you with real numbers, actionable advice, and a stunning dashboard to tame your energy usage.
+The estimate adapts to your recent load. It pauses on AC and waits for enough continuous battery readings before making a prediction.
 
-> **Target:** MacBook Pro / Air / Mac (M-series / Apple Silicon), macOS 13.x or newer. Apple Silicon only.
+### "What is keeping my Mac busy?"
 
----
+Explore a searchable app activity ranking, CPU/GPU/Neural Engine power, and charge history on a shared timeline. In the recent 24-hour view, filter app estimates by **battery or AC** to see how the picture changes away from your desk.
 
-## 🔥 Features That Make a Difference
+Then try one change. The Advisor walks you through a **before/after experiment**, checks measurement coverage and brightness, and compares observed power under the conditions you control.
 
-### 🧠 Smart Battery Advisor & Score (NEW!)
-Batmon doesn't just show data; it acts as your personal battery health coach.
-- **Battery Score (0-100):** A comprehensive grade based on your charging habits, temperatures, and deep discharges.
-- **Actionable Recommendations:** Get warned if you're parking your battery at 100% for too long, experiencing frequent deep discharges, or charging hot.
-- **Health Forecast:** A predictive linear model that forecasts your battery's health 1 and 2 years into the future based on your actual wear.
-- **Printable Weekly Reports:** Generate beautiful PDF reports summarizing your energy usage, top apps, and charging habits.
+### "Is this a busy week, or a battery problem?"
 
-### 🕵️ Sleep Drain & Dark Wake Detection
-Stop wondering what happened overnight. Batmon records abnormal charge loss across sleep gaps and pinpoints the exact processes (like `powerd` or `Bluetooth`) that woke or held the machine awake.
+See the **macOS battery assessment** alongside raw capacity trends, weekly medians and cycle history. Review time spent at higher charge levels, recurring events and changes between equal **7-day or 30-day windows**.
 
-### 🔪 App Energy Attribution & Taming
-- **Vague Activity Monitor? No more.** See the actual **Watt-hours** and **Watts** drawn by every process.
-- **1-Click Taming:** Hover over any app in the Top Apps table to pause (SIGSTOP), resume, or kill a runaway battery-hog directly from the dashboard.
+The Health view also checks short-term capacity predictions against later historical readings. You can see how well a model performed before putting weight on its forecast.
 
-### ⚡ Live Component Power & Thermals
-Geek out on hardware with a real-time dashboard that refreshes every 5 seconds:
-- **Live Wattage Draw:** See exact power consumption for the CPU, GPU, Apple Neural Engine (ANE), and the total package (SoC).
-- **Temperatures:** Monitor SoC, SSD, and Battery temperatures in real-time. Heat kills batteries—stay informed.
+> **Useful numbers, with their meaning attached.** App energy is an estimate of chip activity, not a direct measurement of an app's share of the whole battery. Missing readings stay unknown. An unreliable long-term forecast stays withheld.
 
-### ⚠️ Smart Anomalies & Notifications
-Get notified natively through the macOS menu bar for edge cases that ruin battery life:
-- **Hot Charging:** Warns you if the battery averages >38°C while charging.
-- **Held at 100%:** Warns you if the battery sits at 100% on AC for hours (the main aging driver).
-- **Weak Charger:** You're plugged in, but the battery is still draining!
-- **High Thermal Pressure** and **Per-App Energy Spikes.**
+## Small in the menu bar. Detailed when you need it.
 
-### 🚀 Menu Bar App & Keep-Awake
-<p align="center">
-  <img src="docs/menubar.png" alt="batmon menu bar app" width="300"/>
-</p>
-<p align="center"><em>The native menu bar app: watts, charge, and forecast at a glance; the full readout one click away.</em></p>
+Nine focused views take you from a quick glance to a deeper investigation.
 
-- **Native Menu Bar App:** Live watts, charge %, and forecast at a glance. Completely silent to EDR tools (no subprocess forks).
-- **Keep-Awake Toggle:** One switch prevents your Mac from sleeping—perfect for long downloads or keeping corporate VPNs alive without leaving the app.
+| View | What you can do |
+| :--- | :--- |
+| **Now** | Check charge, power, available sensors, your reserve and runtime goal. |
+| **Advisor** | Choose autonomy or battery care, track completed actions and compare a change. |
+| **History** | Align charge, power and temperature with a shared cursor, including keyboard control. |
+| **Apps** | Search estimated chip-energy rankings and explore recent battery/AC differences. |
+| **Energy** | Compare energy in and out, daily usage and how much time was actually observed. |
+| **Health** | Separate macOS health from raw sensor trends; inspect shifts and forecast accuracy. |
+| **Charging** | Review charging and holding periods, charge-level exposure and low-charge episodes. |
+| **Anomalies** | Group recurring observations, inspect their evidence and acknowledge what you reviewed. |
+| **Report** | Compare weeks or months, export JSON/CSV, or print through your browser. |
 
----
+A **Keep awake** switch is there for long-running work. It prevents idle sleep while leaving lid-close and manual sleep behavior intact. Native charge-limit status appears when macOS exposes it; Battery settings are one click away.
 
-## 🏗 Architecture
+## Install
 
-Three small processes share one local SQLite database (WAL mode). The daemon is the only writer; everything else reads.
+**Built for Apple Silicon MacBooks.** Verified on a MacBook Pro M4 Pro running macOS 26.5. Other Apple Silicon/macOS combinations may expose different sensors and have not all been validated. Intel Macs are not supported.
 
-| Process | Runs as | Role |
-| --- | --- | --- |
-| **batmond** | root LaunchDaemon | The only database writer. Samples `ioreg` (battery, every 15s), `powermetrics` (a short burst per minute for component and per-app power), display brightness, and sleep assertions. Computes sessions, rollups, the discharge forecast, and anomalies. Accepts no network or socket input. |
-| **batmon-web** | user LaunchAgent | FastAPI service on `127.0.0.1:8899`, serving the dashboard and JSON API. Opens the database **read-only**. Owns the optional `caffeinate` child for the Keep-awake toggle. |
-| **Menu-bar app** (`ui/batmon_menu.py`) | user LaunchAgent | Native macOS menu bar app via `rumps`. Reads `/api/now`, gracefully handles API unavailability. Delivers native anomaly notifications (`NSUserNotification`). |
-
-Data lives in `/usr/local/var/batmon/batmon.db`. Raw samples are kept 48 hours, hourly rollups 90 days, and daily rollups indefinitely, so long-term trends stay cheap to store.
-
----
-
-## 🛠 Installation
-
-Batmon installs with a single script. It requires an Apple Silicon Mac and system `python3`. There is no Homebrew or third-party dependency for the core install.
+You need Git, a working `python3` with `venv` and `pip`, and Apple's Command Line Tools Python at `/usr/bin/python3` for the collector. If Command Line Tools are missing, run `xcode-select --install` and finish Apple's installer first.
 
 ```bash
-# You will be prompted for your password to register the root daemon
+git clone https://github.com/m1l0rdz/batmon.git
+cd batmon
 ./install.sh
 ```
 
-That's it. The daemon starts collecting immediately, and the native menu bar app will appear at the top of your screen. 
-Access the gorgeous dashboard at: **http://127.0.0.1:8899**
+Run the installer as your normal user. It requests administrator access for the system collector, installs Python dependencies in a local virtual environment, and starts the collector, web service and menu bar app.
 
-### Uninstall
+**Open [127.0.0.1:8899](http://127.0.0.1:8899/) and you're in.** Keep the cloned folder in place: the web service and menu bar app run from it.
+
+### Your first few minutes
+
+1. **Open Now.** Check the first readings and choose your reserve.
+2. **Use your Mac normally.** A runtime range needs at least five minutes of continuous, usable battery observations.
+3. **Explore Apps and History.** Longer-range summaries appear after completed collection hours; health trends build with daily readings.
+4. **Return to Report.** Compare your own usage over time, with collection coverage shown beside the totals.
+
+<details>
+<summary><strong>Updating and uninstalling</strong></summary>
+
+To update an unmodified checkout, pull the latest code and rerun the installer. Your history stays in the local database.
+
 ```bash
-./uninstall.sh            # remove batmon, keep your historical data
-./uninstall.sh --purge    # remove batmon and delete the database entirely
+git pull --ff-only
+./install.sh
 ```
 
----
+To remove the background services and installed collector while keeping your history:
 
-## 💻 Usage & Tabs
+```bash
+./uninstall.sh
+```
 
-Open **http://127.0.0.1:8899** and explore:
-- **Now:** Live power, forecast, component breakdown, top apps (with pause/resume/kill), session, and connected devices.
-- **Advisor:** Your personalized Battery Score, recommendations, and habit analysis.
-- **Report:** A weekly printable PDF summary of your usage.
-- **History:** Charge %, watts, and component power over 24h / 7d / 30d.
-- **Apps:** Per-app energy over 1h through 30d; toggle system processes on/off.
-- **Energy:** Discharged vs charged watt-hours with brightness overlay.
-- **Health:** Capacity, cycles, cell balance, lifetime temps, and trend forecasts.
-- **Charging:** Sessions, time on battery vs AC, and discharge-depth histogram.
-- **Anomalies:** The full anomaly log for deep investigations.
+To also **permanently delete the collected history**, use `./uninstall.sh --purge` instead. The cloned project folder and its virtual environment remain in place.
 
----
+</details>
 
-## 🛡 Privacy and Non-Goals
+## Private by design
 
-- **100% Local.** No analytics, no tracking, no cloud, no account. Every sample stays in a SQLite file on your Mac.
-- **No remote access.** The web service binds to `127.0.0.1` only. 
-- **Least privilege.** The root daemon opens no network sockets and never runs from your writable project folder - only from a root-owned directory. It runs no arbitrary input and executes fixed Apple binaries with fixed arguments.
-- **Not in scope:** Intel Macs, remote monitoring, and websockets.
+Your battery history belongs on your Mac.
+
+- **Local storage.** Measurements stay in SQLite. There is no account, cloud backend or usage analytics service.
+- **Local access.** The dashboard listens on `127.0.0.1`, not your network interface. Its scripts, charts and fonts need no CDN.
+- **A narrow collector.** The privileged process uses macOS tools and opens no network sockets. The dashboard reads the database without writing to it.
+- **Your choices stay yours.** Goals, the action journal and event acknowledgements are stored in your browser. They do not silently change macOS settings.
+
+Installation downloads Python dependencies. Optional guidance links open external websites; collected telemetry is not uploaded by batmon.
+
+<details>
+<summary><strong>How the measurements work</strong></summary>
+
+| Signal | Collection and scope |
+| :--- | :--- |
+| Battery charge, current and voltage | `ioreg` readings approximately every 15 seconds. |
+| Chip and app activity | A short `powermetrics` sample each minute; app energy is allocated from relative Energy Impact. |
+| Battery condition | The macOS assessment, shown separately from the raw capacity/design ratio. |
+| History | Raw samples for 48 hours, hourly summaries for 90 days, daily summaries retained indefinitely. |
+
+Recent app source filters use estimated time alignment. Historical app summaries combine AC and battery. Chip and battery readings have different sampling intervals, so their difference cannot identify display, Wi-Fi or SSD consumption.
+
+The habits score describes available charging observations, not battery health or remaining lifespan. Before/after comparisons are observational; workload and other unmeasured conditions can still explain a change.
+
+Data is stored at `/usr/local/var/batmon/batmon.db`. The stack is Python, FastAPI, SQLite, a native `rumps` menu bar app and a vanilla JavaScript dashboard with bundled Chart.js.
+
+</details>
+
+<details>
+<summary><strong>If a reading or export is unavailable</strong></summary>
+
+- **Missing temperature or charge limit:** sensor and policy availability varies with macOS and hardware. Unavailable values are not treated as zero.
+- **No runtime yet:** use battery power and allow at least five uninterrupted minutes of usable observations. Sleep gaps or a change of power source restart the window.
+- **No long-term forecast:** enough stable history is required. An observed trend can still be shown without extrapolating it into a replacement date.
+- **An embedded browser does not download:** JSON and CSV exports include a readable preview and a Copy data button. For Print / Save as PDF, use a browser that supports printing, such as Safari or Chrome.
+- **Dashboard does not open:** check `/tmp/batmon-web.log` and `/usr/local/var/batmon/batmond.out.log`, then report the error with your Mac model and macOS version. Review logs before sharing them.
+
+</details>
 
 ---
 
 <p align="center">
-  <i>Take back control of your MacBook's battery life today.</i>
+  <strong>Make your next battery decision with a little more clarity.</strong><br>
+  <a href="#install">Install batmon</a> ·
+  <a href="https://github.com/m1l0rdz/batmon/issues">Report an issue</a> ·
+  <a href="LICENSE">Read the license</a>
 </p>

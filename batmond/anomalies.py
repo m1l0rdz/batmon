@@ -43,7 +43,7 @@ def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str |
                 (now_ts - 15 * 60,) + SYSTEM_APPS
             ).fetchall()
             culprits = [{"app": r[0], "wh": float(r[1] / 1000.0)} for r in rows if r[1] > 0]
-            advice = "Pause/kill these in the Now tab, dim the display, or enable Low Power Mode."
+            advice = "Review these in Activity Monitor, dim the display, or enable Low Power Mode."
             
         elif kind == "__SYSTEM_THERMAL__":
             # Rank by attributed energy (Wh), not raw energy_impact - the latter
@@ -88,9 +88,9 @@ def build_detail(conn, kind: str, now_ts: int, tz, ratio: float = None) -> str |
         else:
             culprits = [{"app": kind, "wh": 0.0}]
             if ratio is not None:
-                advice = f"Using {ratio:.1f}x its usual energy - pause/kill it from the Now tab if unexpected."
+                advice = f"Using {ratio:.1f}x its usual energy - review it in Activity Monitor if unexpected."
             else:
-                advice = "Using unusually high energy - pause/kill it from the Now tab if unexpected."
+                advice = "Using unusually high energy - review it in Activity Monitor if unexpected."
             
         return json.dumps({"culprits": culprits, "advice": advice})
     except Exception:

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from statistics import median
 
 from batmond.sessions import integrate
+from batmon_web.charge_policy import read_policy
 
 # Pseudo-processes: real energy (kept in attribution totals) but noise in
 # "what is eating my battery" lists. Hidden unless include_system is set.
@@ -46,48 +47,23 @@ def todays_peak_soc(conn, now_ts):
     return row[0] if row and row[0] is not None else None
 
 
-def check_native_charge_limit():
-    try:
-        import plistlib
-        with open("/Library/Preferences/com.apple.powerd.charging.plist", "rb") as f:
-            p = plistlib.load(f)
-            if "policies" in p:
-                inner = plistlib.loads(p["policies"])
-                objects = inner.get("$objects", [])
-                root_uid = inner["$top"]["root"]
-                root_obj = objects[root_uid.data]
-                
-                policy_uids = root_obj.get("NS.objects", [])
-                for pu in policy_uids:
-                    policy = objects[pu.data]
-                    reason_uid = policy.get("reason")
-                    if reason_uid:
-                        reason = objects[reason_uid.data]
-                        if reason == "manualChargeLimit":
-                            if not policy.get("terminated", False):
-                                return True
-        return False
-    except Exception:
-        return None
-
-
 def charge_limit_status(conn, now_ts):
-    """Read-only mirror of the native macOS 80% charge limit.
+    """Read the native charge-limit policy without guessing from observed SoC.
 
-    batmon cannot set the limit on Apple Silicon (no accessible SMC key); the
-    user toggles it in System Settings. We attempt to read the native macOS 
-    powerd plist, and fallback to inferring it from today's peak charge."""
-    holding = check_native_charge_limit()
+    A low observed peak does not prove that a charge limit is configured.
+    powerd drops the manualChargeLimit policy on unplug, so an empty archive
+    while on battery means unknown, not off.
+    """
+    policy = read_policy()
+    holding = policy['holding']
+    source = "system_policy" if holding is not None else "unavailable"
+    last = latest_sample(conn)
+    if holding is False and last is not None and not last["on_ac"]:
+        holding, source = None, "on_battery"
     peak = todays_peak_soc(conn, now_ts)
-    
-    if holding is None:
-        if peak is not None:
-            if peak <= 82:
-                holding = True
-            elif peak > 85:
-                holding = False
-    return {"level": 80, "control": "system_settings",
-            "todays_peak_soc": peak, "holding": holding}
+    return {"level": policy['level'], "control": "system_settings",
+            "todays_peak_soc": peak, "holding": holding, "source": source}
+
 
 
 def forecast(conn):
@@ -310,28 +286,41 @@ def health(conn):
                 " ORDER BY day")]
 
 
-def charging(conn):
+def charging(conn, now_ts=None):
+    import time
+    now_ts = int(time.time()) if now_ts is None else now_ts
+    since = now_ts - 30 * 86400
     sessions = [dict(zip(["id", "kind", "started", "ended", "soc_start",
                           "soc_end", "wh"], r))
                 for r in conn.execute(
-                    "SELECT id, kind, started, ended, soc_start, soc_end,"
-                    " wh FROM sessions ORDER BY started DESC LIMIT 200")]
-    agg = conn.execute(
-        "SELECT SUM(CASE WHEN kind='battery' THEN ended-started END),"
-        " SUM(CASE WHEN kind!='battery' THEN ended-started END),"
-        " AVG(CASE WHEN kind='charging' AND ended>started"
-        "     THEN wh/((ended-started)/3600.0) END)"
-        " FROM sessions WHERE ended IS NOT NULL").fetchone()
+                    "SELECT id, kind, started, ended, soc_start, soc_end, wh"
+                    " FROM sessions WHERE started < ? AND COALESCE(ended, ?) > ?"
+                    " ORDER BY started DESC LIMIT 200", (now_ts, now_ts, since))]
+    # Durations are clipped to the same 30-day window, unlike the old lifetime
+    # aggregate. Open segments stop at the last recorded sample.
+    last = latest_sample(conn)
+    live_end = min(now_ts, last["ts"]) if last else now_ts
+    bat = ac = charge_wh = charge_sec = 0
     depth_hist = {}
-    for (drop,) in conn.execute(
-            "SELECT soc_start - soc_end FROM sessions"
-            " WHERE kind='battery' AND soc_end IS NOT NULL"):
-        bucket = f"{int(drop // 10) * 10}-{int(drop // 10) * 10 + 10}%"
-        depth_hist[bucket] = depth_hist.get(bucket, 0) + 1
-    return {"sessions": sessions,
-            "aggregates": {"battery_sec": agg[0] or 0,
-                           "ac_sec": agg[1] or 0,
-                           "avg_charge_watts": agg[2],
+    for kind, started, ended, ss, se, wh in conn.execute(
+            "SELECT kind, started, ended, soc_start, soc_end, wh FROM sessions"
+            " WHERE started < ? AND COALESCE(ended, ?) > ?", (now_ts, live_end, since)):
+        duration = max(0, min(ended if ended is not None else live_end, now_ts) - max(started, since))
+        if kind == "battery":
+            bat += duration
+            if se is not None and ss - se > 0 and started >= since and ended <= now_ts:
+                drop = min(99.999, ss - se)
+                lo = int(drop // 10) * 10
+                bucket = f"{lo}-{lo + 10}"
+                depth_hist[bucket] = depth_hist.get(bucket, 0) + 1
+        else:
+            ac += duration
+        if kind == "charging" and ended and started >= since and ended <= now_ts and wh is not None and duration > 0:
+            charge_wh += wh
+            charge_sec += duration
+    return {"window_days": 30, "sessions": sessions,
+            "aggregates": {"battery_sec": bat, "ac_sec": ac,
+                           "avg_charge_watts": charge_wh / (charge_sec / 3600) if charge_sec else None,
                            "discharge_depth_hist": depth_hist}}
 
 
@@ -355,55 +344,64 @@ OVERNIGHT_MIN_SEC = 2 * 3600  # ignore short evening top-ups
 
 
 def charging_habits(conn, now_ts: int) -> dict:
-    """30-day charging-habit stats. Durable tables only: raw battery_samples
-    keep just 48h, so everything here reads sessions / rollups /
-    battery_health_daily."""
-    since = now_ts - 30 * 86400
+    """30-day observed habits. 'full' means AC not charging, not 100% SoC.
 
-    full_sec = conn.execute(
-        "SELECT COALESCE(SUM(COALESCE(ended, ?) - started), 0) FROM sessions"
-        " WHERE kind='full' AND started >= ?", (now_ts, since)).fetchone()[0]
+    High-charge exposure is an endpoint-based estimate over noncharging AC
+    segments with both endpoints >=95%; it cannot resolve within-segment dips.
+    """
+    from batmon_web.insights import low_charge_episodes
+    since = now_ts - 30 * 86400
+    last = latest_sample(conn)
+    live_end = min(now_ts, last["ts"]) if last else now_ts
+    full_sec = session_ac_sec = 0
+    overnight = 0
+    for kind, started, ended, ss, se in conn.execute(
+            "SELECT kind, started, ended, soc_start, soc_end FROM sessions"
+            " WHERE kind != 'battery' AND started < ? AND COALESCE(ended, ?) > ?",
+            (now_ts, live_end, since)):
+        stop = min(ended if ended is not None else live_end, now_ts)
+        duration = max(0, stop - max(started, since))
+        session_ac_sec += duration
+        endpoint = se if ended is not None else (last["soc_pct"] if last else None)
+        if kind == 'full' and endpoint is not None and min(ss, endpoint) >= 95:
+            full_sec += duration
+        hour = datetime.fromtimestamp(started).hour
+        if started >= since and duration >= OVERNIGHT_MIN_SEC and (hour >= 22 or hour < 6):
+            overnight += 1
     ac_sec, bat_sec = conn.execute(
         "SELECT COALESCE(SUM(on_ac_sec), 0), COALESCE(SUM(on_battery_sec), 0)"
-        " FROM rollup_hourly_battery WHERE hour >= ?", (since,)).fetchone()
-
-    deep = conn.execute(
-        "SELECT COUNT(*) FROM sessions WHERE kind='battery'"
-        " AND soc_end IS NOT NULL AND soc_end < 10 AND started >= ?",
-        (since,)).fetchone()[0]
-
-    # Overnight = plugged session starting 22:00-05:59 local, >= 2h long.
-    overnight = 0
-    for started, ended in conn.execute(
-            "SELECT started, COALESCE(ended, ?) FROM sessions"
-            " WHERE kind IN ('charging', 'full') AND started >= ?",
-            (now_ts, since)):
-        if ended - started < OVERNIGHT_MIN_SEC:
-            continue
-        hour = datetime.fromtimestamp(started).hour
-        if hour >= 22 or hour < 6:
-            overnight += 1
-
+        " FROM rollup_hourly_battery WHERE hour >= ? AND hour < ?", (since, now_ts)).fetchone()
+    since_day = _day_key_local(since)
+    today = _day_key_local(now_ts)
     cyc = conn.execute(
         "SELECT MIN(cycle_count), MAX(cycle_count), COUNT(cycle_count)"
-        " FROM battery_health_daily WHERE day >= date('now', '-30 days')"
-        " AND cycle_count IS NOT NULL").fetchone()
-    cycles_30d = (cyc[1] - cyc[0]) if cyc and cyc[2] >= 2 else None
-
-    avg_temp = conn.execute(
-        "SELECT AVG(avg_temp_c) FROM rollup_daily_battery"
-        " WHERE day >= date('now', '-30 days')").fetchone()[0]
-
-    total = (ac_sec or 0) + (bat_sec or 0)
+        " FROM battery_health_daily WHERE day >= ? AND day <= ?"
+        " AND cycle_count IS NOT NULL", (since_day, today)).fetchone()
+    cycles_30d = cyc[1] - cyc[0] if cyc and cyc[2] >= 2 else None
+    temp = conn.execute(
+        "SELECT SUM(avg_temp_c * (COALESCE(on_ac_sec,0)+COALESCE(on_battery_sec,0))),"
+        " SUM(COALESCE(on_ac_sec,0)+COALESCE(on_battery_sec,0))"
+        " FROM rollup_hourly_battery WHERE hour >= ? AND hour < ? AND avg_temp_c IS NOT NULL",
+        (since, now_ts)).fetchone()
+    total = ac_sec + bat_sec
+    has_battery_segments = conn.execute(
+        "SELECT 1 FROM sessions WHERE kind='battery' AND started < ?"
+        " AND COALESCE(ended, ?) > ? AND COALESCE(ended, ?) > started LIMIT 1",
+        (now_ts, live_end, since, live_end)).fetchone() is not None
     return {
         "window_days": 30,
-        "full_pct_of_ac": (full_sec / ac_sec * 100.0) if ac_sec else None,
-        "ac_share_pct": (ac_sec / total * 100.0) if total else None,
-        "deep_discharges": deep,
+        "full_pct_of_ac": full_sec / session_ac_sec * 100 if session_ac_sec else None,
+        "high_charge_h": full_sec / 3600,
+        "high_charge_basis": "noncharging_ac_segment_endpoints_ge_95",
+        "ac_share_pct": ac_sec / total * 100 if total else None,
+        "deep_discharges": low_charge_episodes(conn, since, now_ts) if has_battery_segments else None,
         "overnight_sessions": overnight,
         "cycles_30d": cycles_30d,
-        "avg_temp_c": avg_temp,
+        "avg_temp_c": temp[0] / temp[1] if temp[1] else None,
+        "temperature_observed_h": (temp[1] or 0) / 3600,
+        "observed_h": total / 3600,
     }
+
 
 def avg_brightness_7d(conn, now_ts: int):
     return conn.execute(
@@ -516,34 +514,3 @@ def health_prediction(conn):
 
     return {"status": "ok", **base,
             "pct_in_1y": _proj(365), "pct_in_2y": _proj(730)}
-
-def weekly_report(conn, now_ts: int) -> dict:
-    since = now_ts - 7 * 86400
-    tot = conn.execute(
-        "SELECT COALESCE(SUM(wh_in),0), COALESCE(SUM(wh_out),0),"
-        " COALESCE(SUM(on_battery_sec),0), COALESCE(SUM(on_ac_sec),0),"
-        " AVG(avg_temp_c) FROM rollup_hourly_battery WHERE hour >= ?",
-        (since,)).fetchone()
-    top = conn.execute(
-        "SELECT app, SUM(attributed_mwh) FROM rollup_hourly_apps"
-        f" WHERE hour >= ? AND app NOT IN ({_SYS_PH})"
-        " GROUP BY app ORDER BY 2 DESC LIMIT 5",
-        (since,) + SYSTEM_APPS).fetchall()
-    sess = conn.execute(
-        "SELECT SUM(CASE WHEN kind='battery' THEN 1 ELSE 0 END),"
-        " SUM(CASE WHEN kind != 'battery' THEN 1 ELSE 0 END),"
-        " SUM(CASE WHEN kind='battery' AND soc_end IS NOT NULL"
-        "     AND soc_end < 10 THEN 1 ELSE 0 END)"
-        " FROM sessions WHERE started >= ?", (since,)).fetchone()
-    anom = conn.execute(
-        "SELECT COUNT(*) FROM anomalies WHERE ts >= ?", (since,)).fetchone()[0]
-    return {"since_ts": since,
-            "wh_in": tot[0], "wh_out": tot[1],
-            "on_battery_h": tot[2] / 3600.0, "on_ac_h": tot[3] / 3600.0,
-            "avg_temp_c": tot[4],
-            "top_apps": [{"app": a, "attributed_wh": m / 1000.0}
-                         for a, m in top],
-            "sessions_battery": sess[0] or 0,
-            "sessions_charging": sess[1] or 0,
-            "deep_discharges": sess[2] or 0,
-            "anomaly_count": anom}

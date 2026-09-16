@@ -1,5 +1,6 @@
-"""batmon-web (design 5.2): read-only DB, 127.0.0.1 only (bind is in the
-uvicorn args, not here). Only state-changing endpoint: POST /api/awake."""
+"""batmon-web: read-only DB, localhost binding in uvicorn arguments.
+The four explicit POST routes retain their existing system-action boundary.
+"""
 import os
 import re
 import sqlite3
@@ -9,14 +10,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from batmond.db import open_ro
 from batmon_web import queries
-from batmon_web import advisor
+from batmon_web import advisor, insights, workbench
 from batmon_web.awake import AwakeManager
 
 STATIC = Path(__file__).parent / "static"
@@ -45,7 +46,9 @@ def create_app(db_path: str,
             conn.close()
 
     @app.get("/api/now")
-    def now():
+    def now(reserve: int = Query(default=20, ge=10, le=30)):
+        if reserve not in (10, 20, 30):
+            raise HTTPException(422, 'reserve must be 10, 20 or 30')
         with db() as conn:
             sample = queries.latest_sample(conn)
             if sample is None:
@@ -54,6 +57,7 @@ def create_app(db_path: str,
             return {"sample": sample,
                     "staleness_sec": now_ts - sample["ts"],
                     "forecast": queries.forecast(conn),
+                    "runtime": insights.runtime_estimate(conn, now_ts, reserve),
                     "top_apps": queries.top_apps_last_hour(conn, now_ts),
                     "component": queries.latest_component(conn),
                     "health": queries.health_now(conn),
@@ -76,7 +80,11 @@ def create_app(db_path: str,
     @app.get("/api/history")
     def history(range: Literal["24h", "7d", "30d"] = "24h"):
         with db() as conn:
-            return queries.history(conn, range, int(time.time()))
+            now_ts = int(time.time())
+            d = queries.history(conn, range, now_ts)
+            start = now_ts - {"24h": 1, "7d": 7, "30d": 30}[range] * 86400
+            d['events'] = insights.power_events(conn, start, now_ts)
+            return d
 
     @app.get("/api/apps")
     def apps(range: Literal["1h", "8h", "24h", "7d", "30d"] = "24h",
@@ -90,6 +98,11 @@ def create_app(db_path: str,
         with db() as conn:
             return queries.energy(conn, range, int(time.time()))
 
+    @app.get("/api/insights")
+    def insights_view(range: Literal["24h", "7d", "30d"] = "7d"):
+        with db() as conn:
+            return insights.overview(conn, int(time.time()), {"24h": 1, "7d": 7, "30d": 30}[range])
+
     @app.get("/api/status")
     def status():
         with db() as conn:
@@ -102,6 +115,24 @@ def create_app(db_path: str,
                 pass
         d["db_size_bytes"] = size
         return d
+
+    @app.get("/api/workbench")
+    def workbench_view(hours: int = Query(default=24, ge=24, le=48)):
+        if hours not in (24, 48):
+            raise HTTPException(422, 'hours must be 24 or 48')
+        with db() as conn:
+            return workbench.recent_observations(conn, int(time.time()), hours)
+
+    @app.get("/api/experiment")
+    def experiment_view(start: int, split: int, end: int):
+        now_ts = int(time.time())
+        if start < now_ts - 48 * 3600 or end > now_ts + 5:
+            raise HTTPException(422, 'Experiment must be inside the retained 48-hour history and end no later than now.')
+        with db() as conn:
+            try:
+                return workbench.experiment(conn, start, split, end)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
 
     @app.get("/api/health")
     def health():
@@ -123,31 +154,49 @@ def create_app(db_path: str,
         with db() as conn:
             return queries.charging_habits(conn, int(time.time()))
 
+    def advice_ctx(conn, now_ts, habits):
+        return {"habits": habits,
+                "top_apps": queries.apps(conn, "24h", now_ts),
+                "frequent_culprit": queries.frequent_culprit(conn),
+                "avg_brightness_7d": queries.avg_brightness_7d(conn, now_ts),
+                "charge_limit": queries.charge_limit_status(conn, now_ts)}
+
     @app.get("/api/advisor")
     def advisor_view():
         with db() as conn:
             now_ts = int(time.time())
             habits = queries.charging_habits(conn, now_ts)
             score = advisor.compute_score(habits, queries.health(conn))
-            ctx = {"habits": habits,
-                   "top_apps": queries.apps(conn, "24h", now_ts),
-                   "frequent_culprit": queries.frequent_culprit(conn),
-                   "avg_brightness_7d": queries.avg_brightness_7d(conn, now_ts),
-                   "charge_limit": queries.charge_limit_status(conn, now_ts)}
+            ctx = advice_ctx(conn, now_ts, habits)
             return {"score": score["score"], "grade": score["grade"],
                     "components": score["components"],
+                    "available_weight": score["available_weight"],
+                    "observed_h": score["observed_h"],
+                    "score_kind": score["score_kind"],
                     "recommendations": advisor.recommendations(ctx),
                     "habits": habits}
 
     @app.get("/api/report")
-    def report():
+    def report(range: Literal["7d", "30d"] = "7d"):
         with db() as conn:
             now_ts = int(time.time())
-            d = queries.weekly_report(conn, now_ts)
-            s = advisor.compute_score(queries.charging_habits(conn, now_ts),
-                                      queries.health(conn))
+            d = {}
+            habits = queries.charging_habits(conn, now_ts)
+            s = advisor.compute_score(habits, queries.health(conn))
             d["score"] = s["score"]
             d["grade"] = s["grade"]
+            d["score_kind"] = s["score_kind"]
+            d["analysis"] = insights.overview(conn, now_ts, 7 if range == '7d' else 30)
+            p = d['analysis']['current']
+            # Legacy summary fields now describe exactly the selected window.
+            for key in ('wh_in', 'wh_out', 'on_battery_h', 'on_ac_h'):
+                d[key] = p[key]
+            d['since_ts'] = p['start_ts']
+            d['until_ts'] = p['end_ts']
+            d['top_apps'] = insights.report_apps(conn, p['start_ts'], p['end_ts'])
+            d.update(insights.report_context(conn, p['start_ts'], p['end_ts']))
+            d["recommendations"] = advisor.recommendations(
+                advice_ctx(conn, now_ts, habits))
             return d
 
     @app.get("/api/anomalies")

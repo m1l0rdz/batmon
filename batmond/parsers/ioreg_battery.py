@@ -45,9 +45,10 @@ def parse_ioreg_battery(raw: bytes, ts: int) -> BatterySample:
     amperage = float(_signed(int(d["Amperage"])))
     voltage_mv = float(d["Voltage"])
     watts = amperage / 1000.0 * (voltage_mv / 1000.0)
-    design = float(d["DesignCapacity"])
-    raw_max = float(d.get("AppleRawMaxCapacity", d["MaxCapacity"]))
-    raw_cur = float(d.get("AppleRawCurrentCapacity", d["CurrentCapacity"]))
+    battery_data = d.get("BatteryData", {})
+    design = float(d.get("DesignCapacity") or battery_data.get("DesignCapacity"))
+    raw_max = float(d.get("AppleRawMaxCapacity", battery_data.get("FullChargeCapacity", d.get("MaxCapacity"))))
+    raw_cur = float(d.get("AppleRawCurrentCapacity", battery_data.get("RemainingCapacity", d.get("CurrentCapacity"))))
     temp = d.get("Temperature")
     
     cell_volts = d.get("BatteryData", {}).get("CellVoltage")

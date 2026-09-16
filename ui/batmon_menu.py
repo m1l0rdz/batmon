@@ -132,7 +132,7 @@ class BatmonApp(rumps.App):
 
         sc = data.get("score") or {}
         if sc.get("score") is not None:
-            self.menu.add(f"Score {sc['score']}/100 ({sc.get('grade', '')})")
+            self.menu.add(f"Habits {sc['score']}/100 ({sc.get('grade', '')})")
 
         sess = data.get("session")
         if sess and sess.get("soc_now") is not None:
@@ -162,12 +162,13 @@ class BatmonApp(rumps.App):
         self.menu.add(awake_item)
 
         cl = data.get("charge_limit") or {}
-        level = cl.get("level", 80)
+        level = cl.get("level")
         holding = cl.get("holding")
         state_str = {True: "active", False: "off"}.get(holding, "?")
         peak = cl.get("todays_peak_soc")
         peak_txt = f" (peak {peak:.0f}%)" if peak is not None else ""
-        self.menu.add(f"Battery limit {level}%: {state_str}{peak_txt}")
+        limit_label = f"Battery limit {level}%" if level is not None else "Battery limit"
+        self.menu.add(f"{limit_label}: {state_str}{peak_txt}")
 
         self.menu.add(rumps.MenuItem("Open Battery Settings", callback=self.open_battery_settings))
 

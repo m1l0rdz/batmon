@@ -1,800 +1,1048 @@
 (() => {
-"use strict";
-const $ = (s) => document.querySelector(s);
-let currentTab = "now";
-let pollTimer = null;
-let charts = [];
-let currentRenderId = 0;
-const ranges = { history: "24h", apps: "24h", energy: "24h" };
-let includeSystem = false;
-let dismissedWarnings = new Set();
-
-const colors = {
-  accent: "#00d2ff",
-  success: "#00ff88",
-  warning: "#ffcc00",
-  danger: "#ff3366",
-  purple: "#b366ff",
-  orange: "#ff8833",
-  muted: "#8ba1b7"
-};
-
-if (window.Chart) {
-  Chart.defaults.animation = false;
-  Chart.defaults.elements.point.radius = 0;
-}
-
-async function j(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(url + " -> " + r.status);
-  return r.json();
-}
-
-function escapeHTML(str) {
-  return String(str).replace(/[&<>"']/g, m => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  })[m]);
-}
-
-function destroyCharts() { charts.forEach(c => c.destroy()); charts = []; }
-Chart.defaults.color = "#8ba1b7";
-Chart.defaults.font.family = "'Inter', -apple-system, sans-serif";
-if (Chart.defaults.plugins.tooltip) {
-  Chart.defaults.plugins.tooltip.backgroundColor = "rgba(11, 15, 25, 0.95)";
-  Chart.defaults.plugins.tooltip.titleColor = "#f0f4f8";
-  Chart.defaults.plugins.tooltip.bodyColor = "#8ba1b7";
-  Chart.defaults.plugins.tooltip.borderColor = "rgba(0, 210, 255, 0.3)";
-  Chart.defaults.plugins.tooltip.borderWidth = 1;
-  Chart.defaults.plugins.tooltip.padding = 10;
-  Chart.defaults.plugins.tooltip.cornerRadius = 8;
-}
-
-function addChart(el, cfg) {
-  if (cfg.type === "line" && cfg.data && cfg.data.datasets) {
-    cfg.data.datasets.forEach(d => {
-      if (d.tension === undefined && !d.stepped) d.tension = 0.4; // smooth curves
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) =>
+    String(s ?? "").replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
+  const num = (v, digits = 1, unit = "") =>
+    v == null || !Number.isFinite(Number(v))
+      ? "Unavailable"
+      : Number(v).toFixed(digits) + unit;
+  const wh = (v) => num(v, 2, " Wh");
+  const signed = (v, unit = "%") =>
+    v == null ? "Insufficient data" : (v > 0 ? "+" : "") + num(v, 1, unit);
+  const duration = (m) =>
+    m == null
+      ? "Unavailable"
+      : `${Math.floor(Math.round(m) / 60)}h ${Math.round(m) % 60}m`;
+  const tsLabel = (ts) =>
+    ts == null ? "Unavailable" : new Date(ts * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const dayLabel = (day) =>
+    new Date(day + "T12:00:00").toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  let historyCursor = null;
+  const colors = ["#9dd7bf", "#e0bd87", "#9dbdd8", "#c1aad5"];
+  if (window.Chart) {
+    Chart.register({
+      id: "sharedCursor",
+      afterDraw(chart) {
+        if (tab !== "history" || historyCursor == null || !chart.scales.x) return;
+        const x = chart.scales.x.getPixelForValue(historyCursor), area = chart.chartArea;
+        if (x < area.left || x > area.right) return;
+        const ctx = chart.ctx;
+        ctx.save(); ctx.strokeStyle = "#9dd7bf"; ctx.lineWidth = 1;
+        ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke(); ctx.restore();
+      },
+    });
+    Chart.defaults.color = "#a8b6b4";
+    Chart.defaults.font.family =
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  }
+  const saved = (key, fallback) => {
+    try { return JSON.parse(localStorage.getItem("batmon." + key)) ?? fallback; }
+    catch (_) { return fallback; }
+  };
+  const save = (key, value) => {
+    try { localStorage.setItem("batmon." + key, JSON.stringify(value)); }
+    catch (_) { /* Browsing with storage disabled still supports this session. */ }
+  };
+  let reserve = [10, 20, 30].includes(saved("reserve", 20)) ? saved("reserve", 20) : 20;
+  let goalMinutes = Number(saved("goalMinutes", 120)) || 120;
+  let goalUnit = saved("goalUnit", "hours") === "minutes" ? "minutes" : "hours";
+  let purpose = saved("purpose", "care") === "runtime" ? "runtime" : "care";
+  let appSource = ["all", "battery", "ac"].includes(saved("appSource", "all")) ? saved("appSource", "all") : "all", experiment = saved("experiment", null), experimentReady = false, lastNow;
+  const storedObject = key => {
+    const value = saved(key, {});
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  };
+  const journal = storedObject("journal"), acknowledged = storedObject("acknowledged");
+  if (!experiment || typeof experiment !== "object" || !Number.isFinite(experiment.start)) experiment = null;
+  let reportData, reportExport = null;
+  const ranges = {
+    history: "24h",
+    apps: "24h",
+    energy: "24h",
+    anomalies: "24h",
+    report: "7d",
+  };
+  const rangeOptions = {
+    history: ["24h", "7d", "30d"],
+    apps: ["1h", "8h", "24h", "7d", "30d"],
+    energy: ["24h", "7d", "30d"],
+    anomalies: ["24h", "7d", "all"],
+    report: ["7d", "30d"],
+  };
+  let tab = "now",
+    renderId = 0,
+    timer,
+    charts = [],
+    includeSystem = saved("includeSystem", false) === true,
+    appSearch = "",
+    showAllApps = saved("showAllApps", false) === true,
+    hideShort = saved("hideShort", false) === true;
+  for (const key of Object.keys(ranges)) {
+    const value = saved("range." + key, ranges[key]);
+    if (rangeOptions[key].includes(value)) ranges[key] = value;
+  }
+  const dismissed = new Set();
+  const attributionNote =
+    "Estimated chip energy, allocated from relative Energy Impact during 5-second samples each minute, on both AC and battery. This excludes much of the rest of the Mac and cannot be compared directly with battery discharge.";
+  const coverageNote =
+    "Coverage is observed awake collection, not device uptime. Unobserved time includes sleep and missing telemetry. Windows end at the last completed UTC hour; labels use local time.";
+  async function json(url, options) {
+    const r = await fetch(url, options);
+    if (!r.ok) throw new Error(`Request failed (${r.status})`);
+    return r.json();
+  }
+  function destroyCharts() {
+    charts.forEach((c) => c.destroy());
+    charts = [];
+  }
+  function paint(id, html) {
+    if (id !== renderId) return false;
+    const active = document.activeElement;
+    const focusId = $("#content").contains(active) ? active.id : null;
+    const focusData = $("#content").contains(active) && active.tagName === "BUTTON" ? {...active.dataset} : null;
+    const openDetails = [...document.querySelectorAll("#content details")].map((d,i) => d.open ? i : -1);
+    destroyCharts();
+    $("#content").innerHTML = html;
+    document.querySelectorAll("#content details").forEach((d,i) => { d.open = openDetails.includes(i); });
+    if (focusId) document.getElementById(focusId)?.focus({preventScroll:true});
+    else if (focusData) [...document.querySelectorAll("#content button")].find(b => Object.entries(focusData).every(([k,v]) => b.dataset[k] === v))?.focus({preventScroll:true});
+    $("#content").setAttribute("aria-busy", "false");
+    return true;
+  }
+  const heading = (title, sub) =>
+    `<p class="eyebrow">Battery insights</p><h1>${title}</h1><p class="subtitle">${sub}</p>`;
+  const card = (label, value, note = "") =>
+    `<div class="card"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div>${note ? `<p class="note">${esc(note)}</p>` : ""}</div>`;
+  const empty = (text) => `<p class="empty">${esc(text)}</p>`;
+  const table = (headers, rows, caption = "") =>
+    `<div class="table-scroll"><table>${caption ? `<caption>${esc(caption)}</caption>` : ""}<thead><tr>${headers.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}">No observations in this range.</td></tr>`}</tbody></table></div>`;
+  const rangebar = (name) =>
+    `<div class="rangebar" aria-label="Time range">${rangeOptions[name].map((r) => `<button data-range="${r}" aria-pressed="${ranges[name] === r}" class="${ranges[name] === r ? "active" : ""}">${r === "all" ? "All history" : r}</button>`).join("")}</div>`;
+  const canvas = (id, label) =>
+    `<div class="chart-wrap"><canvas id="${id}" role="img" aria-label="${esc(label)}">${esc(label)}</canvas></div>`;
+  function chart(id, datasets, options = {}, type = "line", labels) {
+    if (!window.Chart) return;
+    charts.push(
+      new Chart($("#" + id), {
+        type,
+        data: {
+          labels,
+          datasets: datasets.map((d, i) => ({
+            borderColor: colors[i % colors.length],
+            backgroundColor: colors[i % colors.length],
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHitRadius: 8,
+            tension: 0,
+            spanGaps: false,
+            ...d,
+          })),
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { labels: { color: "#a8b6b4", boxWidth: 12 } },
+            tooltip: { mode: "nearest", intersect: false },
+          },
+          ...options,
+        },
+      }),
+    );
+  }
+  function series(rows, key, gap, divisor = 1) {
+    const points = [];
+    let prev;
+    for (const r of rows) {
+      if (prev != null && r.ts - prev > gap)
+        points.push({ x: prev + 1, y: null });
+      points.push({ x: r.ts, y: r[key] == null ? null : r[key] / divisor });
+      prev = r.ts;
+    }
+    return points;
+  }
+  function timeOptions(unit, extra = {}) {
+    return {
+      scales: {
+        x: {
+          type: "linear",
+          ticks: { maxTicksLimit: 7, callback: tsLabel },
+          grid: { color: "#253235" },
+        },
+        y: {
+          title: { display: true, text: unit },
+          grid: { color: "#253235" },
+          ...extra,
+        },
+      },
+      plugins: {
+        legend: { labels: { color: "#a8b6b4", boxWidth: 12 } },
+        tooltip: {
+          callbacks: { title: (items) => tsLabel(items[0].parsed.x) },
+        },
+      },
+    };
+  }
+  function processNote(name) {
+    if (/windowserver/i.test(name))
+      return "Display compositing for apps, windows and monitors.";
+    if (/^node(?:\b|$)/i.test(name))
+      return "Runtime used by development tools and other applications.";
+    if (
+      /daemon|^(__|kernel|launchd|airportd|mds|cloudd|bird|mDNSResponder|powerd)/i.test(
+        name,
+      )
+    )
+      return "Background system service; review related activity rather than terminating it.";
+    return "";
+  }
+  function appRows(rows, showShare = true) {
+    return rows
+      .map(
+        (a) =>
+          `<tr><td>${esc(a.app)}<span class="process-note">${esc(processNote(a.app))}</span></td><td class="num">${wh(a.attributed_wh)}</td>${showShare ? `<td class="num"><span class="bar-track"><span class="bar" style="width:${Math.max(0, Math.min(100, a.share_pct || 0))}%"></span></span>${num(a.share_pct, 1, "%")}</td>` : ""}</tr>`,
+      )
+      .join("");
+  }
+  function recommendations(rows, actions = false) {
+    if (!rows?.length)
+      return empty(
+        "No specific action identified from available observations. This is not a battery health assessment.",
+      );
+    return rows
+      .map((r) => {
+        const url = /^https:\/\//.test(r.source_url || "")
+          ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener noreferrer">Read the guidance</a>`
+          : "";
+        const target = Object.hasOwn(renderers, r.target_tab)
+          ? `<button data-go="${esc(r.target_tab)}">View ${esc(r.target_tab)}</button>`
+          : "";
+        const key = r.title;
+        const action = actions ? `<button data-journal="${esc(key)}" aria-pressed="${!!journal[key]}">${journal[key] ? "Undo completion" : "Mark complete"}</button>${journal[key] ? `<span class="muted">Completed ${tsLabel(journal[key])}</span>` : ""}` : "";
+        return `<article class="recommendation"><h3>${esc(r.title)}</h3><p class="note">${esc(r.body)}</p>${r.action ? `<p>${esc(r.action)}</p>` : ""}${url}${target}${action}</article>`;
+      })
+      .join("");
+  }
+  function updateControls(d) {
+    if (!$("#awake").disabled) $("#awake").checked = !!d.awake;
+    const c = d.charge_limit || {};
+    $("#cl-status").textContent =
+      c.holding === true
+        ? c.level != null ? `Charge limit ${c.level}% active` : "Charge-holding policy active"
+        : c.holding === false
+          ? "Charge-holding policy inactive"
+          : c.source === "on_battery"
+            ? "Charge limit reported only on AC"
+            : "Charging policy unavailable";
+    $("#cl-status").title =
+      c.level != null ? `Native macOS charge limit: ${c.level}%.` : "Configured charge percentage is not available. Open Battery settings to check it.";
+  }
+  function warningCards(d) {
+    const rows = [
+      ...(d.radio_warnings || []).map((r) => ({
+        ...r,
+        key: `radio-${r.ts}`,
+        label: "Radio observation",
+        text: r.reason,
+      })),
+      ...(d.dark_wakes || []).map((r) => ({
+        ...r,
+        key: `wake-${r.ts}`,
+        label: "Sleep-gap drain",
+        text: `${r.reason || "Observed battery use during a sleep gap"}. ${wh(r.wh_drained)} estimated gap energy from charge-level drop and assumed battery voltage${r.duration_sec >= 60 ? ` over ${duration(r.duration_sec / 60)}` : ""}. ${(r.culprits || []).map((c) => `${c.proc}: ${c.why}`).join("; ")}`,
+      })),
+    ];
+    return rows
+      .filter((r) => !dismissed.has(r.key))
+      .slice(0, 5)
+      .map(
+        (r) =>
+          `<div class="notice"><button data-dismiss="${esc(r.key)}" aria-label="Dismiss ${esc(r.label)}">Dismiss</button><strong>${r.label}</strong><p>${esc(r.text)}</p><span class="muted">${tsLabel(r.ts)}. Associated activity is evidence, not proof of cause.</span></div>`,
+      )
+      .join("");
+  }
+  async function renderNow(id) {
+    const d = await json("/api/now?reserve=" + reserve);
+    if (id !== renderId) return;
+    lastNow = d;
+    updateControls(d);
+    const s = d.sample || {},
+      c = d.component || {},
+      h = d.health || {},
+      r = d.runtime || {};
+    const componentFresh =
+      c.ts_minute != null && Date.now() / 1000 - c.ts_minute <= 180;
+    const componentNote =
+      c.ts_minute == null
+        ? "No chip reading is available."
+        : `Chip reading ${tsLabel(c.ts_minute)}${componentFresh ? "" : "; older than 3 minutes, not current"}.`;
+    const direction =
+      s.watts == null
+        ? "Battery power unavailable"
+        : s.watts > 0
+          ? `${num(s.watts, 1, " W")} entering the battery`
+          : s.watts < 0
+            ? `${num(Math.abs(s.watts), 1, " W")} leaving the battery`
+            : "No net battery power";
+    const states = {
+      warming_up: "Collecting a continuous 5-minute battery window",
+      stale: "Recent battery readings are unavailable",
+      on_ac: "Runtime estimate pauses while connected to AC",
+      at_reserve: `At or below the ${reserve}% reserve`,
+      unavailable: "Not enough usable discharge data",
+    };
+    const runtime =
+      r.status === "ok"
+        ? `${duration(r.minutes_low)} - ${duration(r.minutes_high)}`
+        : states[r.status] || "Runtime unavailable";
+    paint(
+      id,
+      heading(
+        "Right now",
+        `${s.ts == null ? "Awaiting first battery reading" : s.on_ac ? (s.is_charging ? "Connected to AC, charging" : "Connected to AC") : "Running on battery"} · Last reading ${tsLabel(s.ts)}`,
+      ) +
+        `<section class="hero"><div class="charge-visual" role="img" aria-label="Battery ${num(s.soc_pct, 0, "%")}, reserve ${reserve}%"><div class="battery-track"><div class="battery-fill" style="height:${Math.max(0, Math.min(100, s.soc_pct || 0))}%"></div><div class="reserve-line" style="bottom:${reserve}%"></div></div><div class="charge-value"><div class="number">${num(s.soc_pct, 0, "%")}</div><p class="muted">${direction}</p></div></div><div class="runtime-panel"><div class="k">Estimated time to ${reserve}% reserve</div><div class="runtime">${runtime}</div><p class="note">${r.status === "ok" ? `Recent-load scenarios over ${num(r.window_minutes, 1)} minutes; median ${duration(r.minutes_median)}. This is not a confidence interval.` : "An estimate appears after enough uninterrupted battery use."}</p><div class="rangebar compact"><span class="k">Keep in reserve</span>${[10,20,30].map(v => `<button data-reserve="${v}" aria-pressed="${v === reserve}" class="${v === reserve ? "active" : ""}">${v}%</button>`).join("")}</div></div></section><div class="goal-strip"><label for="goal-duration">I need to keep going for</label><input id="goal-duration" type="number" min="${goalUnit === "hours" ? .25 : 15}" max="${goalUnit === "hours" ? 24 : 1440}" step="${goalUnit === "hours" ? .25 : 15}" value="${goalUnit === "hours" ? goalMinutes / 60 : goalMinutes}"><select id="goal-unit" aria-label="Duration unit"><option value="hours" ${goalUnit === "hours" ? "selected" : ""}>hours</option><option value="minutes" ${goalUnit === "minutes" ? "selected" : ""}>minutes</option></select><p id="goal-result" class="note">${goalResult(d)}</p></div>` +
+        `<div class="grid">${card("Current raw capacity", num(h.max_capacity_pct, 1, "%"), "Relative to design capacity; readings fluctuate.")}${card("Battery temperature", num(s.temp_c, 1, " °C"), s.temp_c == null ? "This sensor is not currently reported." : "Battery sensor, not ambient temperature.")}${card(componentFresh ? "Chip package power" : "Last chip package power", num(c.package_mw == null ? null : c.package_mw / 1000, 1, " W"), componentNote + " Chip only; excludes display and other hardware.")}${card("Display brightness", num(s.brightness_pct, 0, "%"))}</div>` +
+        `<p class="note">${esc(componentNote)} Chip temperature: ${num(c.soc_temp_c, 1, " °C")}. SSD: ${num(c.ssd_temp_c, 1, " °C")}. Thermal pressure: ${esc(c.thermal_pressure || "unavailable")}.</p>` +
+        (d.devices?.length
+          ? `<p class="note">Connected devices: ${d.devices.map((x) => `${esc(x.name)} ${num(x.battery_pct, 0, "%")}`).join("; ")}.</p>`
+          : "") +
+        warningCards(d) +
+        `<h2>App activity in the last hour</h2><p class="note">${attributionNote}</p>${table(["App or process", "Estimated chip energy"], appRows(d.top_apps || [], false))}<button data-go="apps">Explore app activity</button>`,
+    );
+  }
+  function goalResult(d) {
+    const r = d?.runtime || {};
+    if (r.status !== "ok") return "A goal comparison needs a current battery runtime estimate. No guaranteed runtime.";
+    if (goalMinutes <= r.minutes_low) return `Recent-load scenarios cover your ${duration(goalMinutes)} goal before the ${reserve}% reserve. Workload can change; this is not a guarantee.`;
+    if (goalMinutes <= r.minutes_high) return `Your ${duration(goalMinutes)} goal is within the scenario range. Lighter use may help; runtime is not guaranteed.`;
+    return `Your ${duration(goalMinutes)} goal exceeds the recent-load range. Reduce activity or plan a charge; runtime is not guaranteed.`;
+  }
+  function experimentMarkup() {
+    const x = experiment;
+    const phase = !x ? 0 : !x.split ? 1 : !x.end ? 2 : 3;
+    const elapsed = x ? Math.max(0, (Date.now() / 1000 - (x.split || x.start)) / 60) : 0;
+    return `<section class="experiment"><div><p class="eyebrow">A small experiment</p><h2>Does one change make a difference?</h2><p class="note">Stay on battery. Keep the same workload and display brightness in both intervals; change just one thing between them. Each interval needs at least 5 minutes. Observed differences do not prove cause.</p></div><ol class="steps">${["Baseline", "Make one change", "Observe after", "Compare"].map((v,i) => `<li class="${i <= (phase === 1 ? 0 : phase) ? "current" : ""}">${v}</li>`).join("")}</ol>${phase === 0 ? `<label class="check-line"><input id="experiment-ready" type="checkbox" ${experimentReady ? "checked" : ""}> I can keep the workload and brightness comparable</label><button id="experiment-start" ${experimentReady ? "" : "disabled"}>Start baseline</button>` : `<p class="note">Baseline started ${tsLabel(x.start)}${x.split ? `. After-change interval started ${tsLabel(x.split)}` : ""}. ${phase < 3 ? `${num(elapsed, 1)} minutes in this interval.` : "Both intervals complete."}</p>${phase === 1 ? `<button data-experiment="split" ${elapsed < 5 ? "disabled" : ""}>I made one change - start after interval</button>` : phase === 2 ? `<button data-experiment="finish" ${elapsed < 5 ? "disabled" : ""}>Finish and compare</button>` : `<div id="experiment-result" role="status">Loading comparison...</div>`}<button data-experiment="cancel">${phase === 3 ? "Start over" : "Cancel experiment"}</button>`}<p class="local-note">Boundaries are saved only in this browser. Telemetry is retained for 48 hours. Leave this tab and return at any time.</p></section>`;
+  }
+  async function loadExperimentResult(id) {
+    if (!experiment?.end) return;
+    const x = experiment;
+    if (Date.now()/1000 - x.start > 48*3600) {
+      if (id === renderId && $("#experiment-result")) $("#experiment-result").textContent = "This experiment is outside the 48-hour telemetry retention window. Start over to collect a new comparison.";
+      return;
+    }
+    try {
+      const d = await json(`/api/experiment?start=${x.start}&split=${x.split}&end=${x.end}`);
+      if (id !== renderId || !$("#experiment-result")) return;
+      $("#experiment-result").innerHTML = `<div class="grid">${card("Before", num(d.before?.average_watts, 1, " W"), `${num(d.before?.observed_h * 60, 1)} observed minutes`)}${card("After", num(d.after?.average_watts, 1, " W"), `${num(d.after?.observed_h * 60, 1)} observed minutes`)}${card("Observed power change", d.status === "comparable" ? signed(d.power_change_pct) : "Comparison withheld", "Different activity may explain any difference.")}</div><p class="note">${esc((d.reasons || []).join(" "))} Brightness: ${num(d.before?.avg_brightness, 0, "%")} before / ${num(d.after?.avg_brightness, 0, "%")} after.</p>`;
+    } catch (e) {
+      if (id === renderId && $("#experiment-result")) $("#experiment-result").textContent = "Comparison unavailable. Refresh this view to retry; saved boundaries are intact.";
+    }
+  }
+  async function renderAdvisor(id) {
+    const d = await json("/api/advisor");
+    paint(
+      id,
+      heading(
+        "A guide to your habits",
+        "Last 30 days. A heuristic about observed charging habits, not a health score or remaining lifespan.",
+      ) +
+        `<div class="grid">${card("Habits score", d.score == null ? "Not ready" : `${num(d.score, 0)} / 100`, d.score == null ? "Requires at least 24 observed hours." : "Based only on available habit factors.")}${card("Observed collection", num(d.observed_h ?? d.habits?.observed_h, 1, " h"))}${card("Available factor weight", num(d.available_weight, 0, " / 100"), "Unavailable factors are omitted, not assumed healthy.")}</div>` +
+        table(
+          ["Habit factor", "Points", "Observed evidence"],
+          (d.components || [])
+            .map(
+              (c) =>
+                `<tr><td>${esc(c.name)}</td><td>${c.points == null ? "Unavailable" : `${num(c.points, 0)} / ${num(c.max, 0)}`}</td><td>${esc(c.why)}</td></tr>`,
+            )
+            .join(""),
+        ) +
+        `<div class="rangebar"><span class="k">My priority</span><button data-purpose="runtime" aria-pressed="${purpose === "runtime"}" class="${purpose === "runtime" ? "active" : ""}">Longer today</button><button data-purpose="care" aria-pressed="${purpose === "care"}" class="${purpose === "care" ? "active" : ""}">Battery care</button></div><h2>${purpose === "runtime" ? "Make room for the work ahead" : "Useful next steps"}</h2>${purpose === "runtime" ? `<article class="recommendation"><h3>Reduce the load, then observe</h3><p class="note">Review active apps, lower brightness if practical and check your reserve in Now. Use the experiment below to compare one change under similar conditions.</p><button data-go="now">Check runtime</button><button data-go="apps">Review app activity</button></article>` : ""}${recommendations(d.recommendations, true)}<details class="evidence-details"><summary>Completed action journal (${Object.keys(journal).length})</summary>${Object.entries(journal).sort((a,b) => b[1]-a[1]).map(([key,ts]) => `<p class="note"><strong>${esc(key)}</strong> · ${tsLabel(ts)} <button data-journal="${esc(key)}">Undo</button></p>`).join("") || empty("No completed actions yet.")}</details><p class="local-note">Action journal is saved only in this browser. Marking an action complete does not change system settings.</p>${experimentMarkup()}`,
+    );
+    await loadExperimentResult(id);
+  }
+  async function renderHistory(id) {
+    const d = await json("/api/history?range=" + ranges.history);
+    if (id !== renderId) return;
+    const b = d.battery || [],
+      c = d.components || [],
+      t = d.temperature || [],
+      gap = ranges.history === "24h" ? 90 : 3600;
+    paint(
+      id,
+      heading(
+        "Power over time",
+        "Time is proportional. Gaps mark missing observations; lines do not interpolate across them.",
+      ) +
+        rangebar("history") +
+        `<p class="note">Move across any chart to align all four views. <span id="history-cursor" aria-live="off">No time selected.</span></p>${b.length ? `<label class="history-scrub" for="history-time">Inspect a time <input id="history-time" type="range" aria-label="Inspect the same time on all history charts"></label>` : ""}<details class="evidence-details"><summary>Power-state changes (${(d.events || []).length})</summary>${table(["When", "Changed to"], (d.events || []).slice().reverse().map(e => `<tr><td>${tsLabel(e.ts)}</td><td>${esc({battery:"Battery",charging:"AC, charging",full:"AC, not charging"}[e.kind] || e.kind)}</td></tr>`).join(""))}<p class="note">State changes observed between adjacent segments; gaps are not interpreted as plug events. Display attachment history is not collected.</p></details>` +
+        (b.length
+          ? `<h2>Battery charge</h2>${canvas("charge", "Battery charge percentage over time")}<h2>Battery power</h2><p class="note">Positive power charges the battery; negative power discharges it. This is not power at the wall socket.</p>${canvas("power", "Signed battery watts over time")}<h2>Chip components</h2>${canvas("components", "CPU, GPU, ANE and chip package power in watts")}<h2>Temperature</h2><p class="note">Missing sensors remain blank. Chip temperature is not battery temperature.</p>${canvas("temperature", "Chip, SSD and battery temperature in degrees Celsius")}`
+          : empty(
+              "No history in this range. Minute readings appear first; longer ranges need completed hourly summaries.",
+            )),
+    );
+    if (!b.length) return;
+    const fields =
+      ranges.history === "24h"
+        ? [["soc_pct", "Charge"]]
+        : [
+            ["soc_min", "Hourly minimum"],
+            ["soc_max", "Hourly maximum"],
+          ];
+    chart(
+      "charge",
+      fields.map(([key, label]) => ({ label, data: series(b, key, gap) })),
+      timeOptions("%", { min: 0, max: 100 }),
+    );
+    chart(
+      "power",
+      [{ label: "Battery W", data: series(b, "watts", gap) }],
+      timeOptions("W"),
+    );
+    chart(
+      "components",
+      [
+        ["cpu_mw", "CPU"],
+        ["gpu_mw", "GPU"],
+        ["ane_mw", "ANE"],
+        ["package_mw", "Package"],
+      ].map(([key, label]) => ({ label, data: series(c, key, gap, 1000) })),
+      timeOptions("W"),
+    );
+    chart(
+      "temperature",
+      [
+        ["soc_temp_c", "Chip"],
+        ["ssd_temp_c", "SSD"],
+        ["temp_c", "Battery"],
+      ].map(([key, label]) => ({ label, data: series(t, key, gap) })),
+      timeOptions("°C"),
+    );
+    const times = [...b, ...c, ...t].map(r => r.ts).filter(Number.isFinite);
+    const min = Math.min(...times), max = Math.max(...times);
+    const scrub = $("#history-time");
+    scrub.min = min; scrub.max = max; scrub.step = 60; scrub.value = historyCursor == null ? max : Math.max(min, Math.min(max, historyCursor));
+    scrub.setAttribute("aria-valuetext", tsLabel(Number(scrub.value)));
+    scrub.addEventListener("input", () => {
+      historyCursor = Number(scrub.value);
+      $("#history-cursor").textContent = tsLabel(historyCursor);
+      scrub.setAttribute("aria-valuetext", tsLabel(historyCursor));
+      charts.forEach(other => other.draw());
+    });
+    charts.forEach(ch => {
+      ch.options.scales.x.min = min; ch.options.scales.x.max = max;
+      ch.options.layout = { padding: { left: 0, right: 12 } };
+      ch.options.scales.y.afterFit = axis => { axis.width = 62; };
+      ch.update("none");
+      ch.canvas.addEventListener("mousemove", event => {
+        const rect = ch.canvas.getBoundingClientRect();
+        const px = (event.clientX - rect.left) * ch.width / rect.width;
+        historyCursor = Math.max(min, Math.min(max, ch.scales.x.getValueForPixel(px)));
+        $("#history-cursor").textContent = tsLabel(historyCursor);
+        scrub.value = historyCursor; scrub.setAttribute("aria-valuetext", tsLabel(historyCursor));
+        charts.forEach(other => other.draw());
+      });
+      ch.canvas.addEventListener("mouseleave", () => {
+        historyCursor = null; charts.forEach(other => other.draw());
+      });
     });
   }
-  if (cfg.options && cfg.options.scales) {
-    Object.values(cfg.options.scales).forEach(scale => {
-      if (!scale.grid) scale.grid = {};
-      scale.grid.color = "rgba(255, 255, 255, 0.03)";
-      scale.grid.drawBorder = false;
+  async function renderApps(id) {
+    const recent = ranges.apps === "24h";
+    const response = await json(recent ? "/api/workbench?hours=24" : `/api/apps?range=${ranges.apps}&include_system=${includeSystem}`);
+    const d = recent ? (response.apps?.[appSource] || []) : response;
+
+    if (
+      !paint(
+        id,
+        heading(
+          "Where chip energy goes",
+          "Use this ranking to identify activity worth reviewing in the app or in Activity Monitor.",
+        ) +
+          rangebar("apps") +
+          (recent ? `<div class="rangebar compact"><span class="k">Recent observations</span>${[["all","All sources"],["battery","Battery"],["ac","AC"]].map(([v,label]) => `<button data-source="${v}" aria-pressed="${appSource === v}" class="${appSource === v ? "active" : ""}">${label}</button>`).join("")}</div><p class="note">${esc(response.apps_note || "Source-separated estimates use retained samples from the last 24 hours; uncertain source remains in All sources.")}</p>` : `<p class="note">Historical summaries combine AC and battery. Select 24h for a verified recent power-source filter.</p>`) +
+          `<div class="rangebar"><label for="app-search">Find an app</label><input id="app-search" type="search" value="${esc(appSearch)}" placeholder="App or process name">${recent ? "" : `<label><input id="system-toggle" type="checkbox" ${includeSystem ? "checked" : ""}> Include system categories</label>`}</div><p class="note">${recent && appSource !== "all" ? attributionNote.replace("on both AC and battery", appSource === "battery" ? "in estimated battery-only sample windows" : "in estimated AC sample windows") : attributionNote}</p><p class="note">Share is of estimated chip energy in the selected source and range. The 24h view includes all reported processes. Search does not change that denominator. System services are not safe targets for force-stopping.</p><div id="app-results"></div>`,
+      )
+    )
+      return;
+    const update = () => {
+      const rows = d.filter((a) =>
+        a.app.toLowerCase().includes(appSearch.toLowerCase()),
+      );
+      const visible = showAllApps ? rows : rows.slice(0, 25);
+      $("#app-results").innerHTML =
+        table(
+          [
+            "App or process",
+            "Estimated chip energy",
+            "Share of selected total",
+          ],
+          appRows(visible),
+          `Showing ${visible.length} of ${rows.length} matching processes (${d.length} total).`,
+        ) +
+        (rows.length > 25
+          ? `<button id="app-count-toggle" aria-expanded="${showAllApps}">${showAllApps ? "Show top 25" : "Show all"}</button>`
+          : "");
+    };
+    update();
+    $("#app-results").addEventListener("click", (e) => {
+      if (!e.target.closest("#app-count-toggle")) return;
+      showAllApps = !showAllApps; save("showAllApps", showAllApps);
+      update();
     });
-  } else if (!cfg.options) {
-    cfg.options = { scales: { x: { grid: { color: "rgba(255, 255, 255, 0.03)" } }, y: { grid: { color: "rgba(255, 255, 255, 0.03)" } } } };
+    $("#app-search").addEventListener("input", (e) => {
+      appSearch = e.target.value;
+      update();
+    });
+    $("#system-toggle")?.addEventListener("change", (e) => {
+      includeSystem = e.target.checked; save("includeSystem", includeSystem);
+      switchTab("apps");
+    });
   }
-  const c = new Chart(el, cfg);
-  charts.push(c);
-  return c;
-}
-
-function fmtMin(m) {
-  if (m == null) return "-";
-  return Math.floor(m / 60) + "h " + (m % 60) + "m";
-}
-function fmtDur(sec) { return fmtMin(Math.floor(sec / 60)); }
-function fmtWh(wh) {
-  return wh < 0.01 ? (wh * 1000).toFixed(1) + " mWh" : wh.toFixed(2) + " Wh";
-}
-function tsLabel(ts) {
-  if (typeof ts === "string") return ts;
-  const d = new Date(ts * 1000);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-    " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-}
-
-function setLive(ok, text) {
-  $("#live").classList.toggle("down", !ok);
-  $("#livetext").textContent = text;
-}
-
-function emptyNote(text) {
-  return `<p class="muted">${escapeHTML(text)}</p>`;
-}
-
-const TAB_RANGES = {
-  history: ["24h", "7d", "30d"],
-  energy: ["24h", "7d", "30d"],
-  apps: ["1h", "8h", "24h", "7d", "30d"],
-};
-
-function rangeButtons(tab, extra) {
-  const html = TAB_RANGES[tab].map(x =>
-    `<button data-range="${x}" class="${x === ranges[tab] ? "active" : ""}">${x}</button>`
-  ).join("") + (extra || "");
-  return `<div class="rangebar">${html}</div>`;
-}
-
-function bindRangeButtons(tab) {
-  document.querySelectorAll(".rangebar button[data-range]").forEach(b =>
-    b.addEventListener("click", () => {
+  function periodCards(p) {
+    return `<div class="grid">${card("Battery energy out", wh(p.wh_out))}${card("Battery energy in", wh(p.wh_in))}${card("Observed on battery", num(p.on_battery_h, 1, " h"))}${card("Observed on AC", num(p.on_ac_h, 1, " h"))}${card("Observed coverage", num(p.coverage_pct, 1, "%"), `${num(p.observed_h, 1)} hours collected`)}</div>`;
+  }
+  function dailyChart(rows) {
+    chart(
+      "daily",
+      [
+        {
+          label: "Battery out (Wh)",
+          data: rows.map((r) => (r.observed_h > 0 ? r.wh_out : null)),
+        },
+        {
+          label: "Battery in (Wh)",
+          data: rows.map((r) => (r.observed_h > 0 ? r.wh_in : null)),
+        },
+      ],
+      {
+        scales: {
+          y: { beginAtZero: true, title: { display: true, text: "Wh" } },
+        },
+      },
+      "bar",
+      rows.map((r) => dayLabel(r.day)),
+    );
+  }
+  async function renderEnergy(id) {
+    const [d, recent] = await Promise.all([json("/api/insights?range=" + ranges.energy), json("/api/workbench?hours=24")]);
+    const p = d.current, m = recent.matched || {};
+    if (
+      !paint(
+        id,
+        heading(
+          "Energy through the battery",
+          "Accumulated battery energy, not total Mac consumption or electricity from the wall.",
+        ) +
+          rangebar("energy") +
+          periodCards(p) +
+          `<p class="note">${coverageNote} ${esc(p.power_method || "")}</p><section class="evidence-panel"><p class="eyebrow">Recent paired observations · 24 hours</p><h2>Two views of power</h2><div class="grid">${card("Battery discharge", num(m.battery_watts, 1, " W"), "Observed at the battery.")}${card("Chip package estimate", num(m.chip_watts, 1, " W"), "Sampled chip activity in corresponding windows.")}${card("Paired battery window", num(m.observed_h, 2, " h"), "Conservatively matched battery-only collection.")}</div><p class="note">${esc(m.note || "Battery and chip sensors use different sampling cadences. These estimates are not an energy balance.")} Display, fans, radios and connected devices are not separately metered; subtraction cannot identify their power.</p></section>` +
+          (p.has_data
+            ? `<h2>Daily observed energy</h2>${canvas("daily", "Daily battery charge and discharge energy in watt-hours")}<p class="note">Blank days have no observations. Low bars may reflect less collection, not lower power.</p>`
+            : empty("No completed hourly observations in this range.")),
+      )
+    )
+      return;
+    if (p.has_data) dailyChart(p.daily);
+  }
+  function healthCards(h) {
+    const checked =
+      h.macos_checked_ts == null
+        ? "macOS assessment check time unavailable."
+        : `macOS assessment checked ${tsLabel(h.macos_checked_ts)}.`;
+    const macos = [
+      card(
+        "macOS maximum capacity",
+        num(h.macos_capacity_pct, 0, "%"),
+        "Maximum-capacity assessment reported by macOS.",
+      ),
+      card(
+        "macOS battery condition",
+        h.macos_condition || "Unavailable",
+        "Condition reported by macOS Battery Health.",
+      ),
+    ].join("");
+    const observed = [
+      card(
+        "Current raw sensor capacity",
+        num(h.current_raw_pct, 1, "%"),
+        "Raw reported capacity relative to design.",
+      ),
+      card(
+        "7-day raw sensor median",
+        num(h.median_7d_pct, 1, "%"),
+        "Smooths daily raw measurement fluctuation.",
+      ),
+      card(
+        "Raw change vs previous week",
+        signed(h.change_pp, " pp"),
+        "Percentage points; an increase can be recalibration.",
+      ),
+      card(
+        "Cycle count",
+        num(h.cycle_count, 0),
+        "Not a replacement countdown.",
+      ),
+    ].join("");
+    return `<div class="grid">${macos}</div>
+      <p class="note">${esc(checked)} Raw sensor capacity and its historical medians are separate measurements, not Apple's maximum-capacity diagnostic. They may differ from the macOS assessment because of calibration and measurement methods.</p>
+      <div class="grid">${observed}</div>`;
+  }
+  async function renderHealth(id) {
+    const [d, advice] = await Promise.all([
+      json("/api/insights?range=7d"),
+      json("/api/advisor"),
+    ]);
+    const h = d.health;
+    if (
+      !paint(
+        id,
+        heading(
+          "Battery condition",
+          "Start with the macOS assessment, then explore the separately measured raw capacity trend.",
+        ) +
+          healthCards(h) +
+          `<p class="note">${num(h.points, 0)} daily observations spanning ${num(h.span_days, 0)} days. Each 7-day median needs at least four observations.</p>` +
+          (h.weekly?.length
+            ? `<h2>Weekly raw sensor median</h2>${canvas("health", "Weekly median raw battery capacity relative to design")}`
+            : empty(
+                "Weekly capacity medians will appear as daily snapshots accumulate.",
+              )) +
+          `<div class="notice"><strong>Long-term forecast: ${h.forecast_status === "ok" ? "trend passes the current quality gate" : "withheld"}</strong><p>${esc(h.forecast_reason || "Not enough stable observations to extrapolate reliably.")}</p><span class="muted">A withheld prediction does not erase an observed decline. Capacity estimates also move with calibration.</span></div><p class="note">For this MacBook Pro generation, Apple lists a 1,000-cycle design reference. Cycle count alone does not determine service need. Check macOS Battery Health for its assessment. <a href="https://support.apple.com/en-ie/102888" target="_blank" rel="noopener noreferrer">Apple cycle guidance</a> · <a href="https://support.apple.com/en-in/108376" target="_blank" rel="noopener noreferrer">Battery service guidance</a></p>${healthDiagnostics(h.diagnostics)}<h2>Actions independent of a forecast</h2>${recommendations(advice.recommendations)}`,
+      )
+    )
+      return;
+    if (h.weekly?.length)
+      chart(
+        "health",
+        [
+          {
+            label: "Weekly raw sensor median %",
+            data: series(
+              h.weekly.map((r) => ({
+                ts: Date.parse(r.day + "T12:00:00") / 1000,
+                capacity_pct: r.capacity_pct,
+              })),
+              "capacity_pct",
+              8 * 86400,
+            ),
+          },
+        ],
+        timeOptions("% of design"),
+      );
+  }
+  function healthDiagnostics(d = {}) {
+    const bt = d.backtest || {};
+    return `<details class="evidence-details"><summary>Capacity changes and forecast validation</summary><p class="note">${esc(d.note || "Capacity shifts are observations, not a diagnosis of recalibration or replacement.")}</p>${table(["Observed shift", "Raw change", "Context"], (d.shifts || []).map(s => `<tr><td>${esc(s.day)}</td><td>${signed(s.change_pp, " pp")}</td><td>${esc(s.reason)}</td></tr>`).join(""))}<div class="grid">${card("Out-of-sample validation", bt.mae_pp != null ? num(bt.mae_pp, 2, " pp mean error") : "Withheld", bt.note || "A stable observed trend is required.")}${card("Constant-median baseline", num(bt.baseline_mae_pp, 2, " pp mean error"), bt.status === "not_improved" ? "Trend did not improve on this simpler baseline." : "Compare held-out error, not years-ahead accuracy.")}${card("Validation windows", num(bt.windows, 0))}</div>${table(["Cycle observation window", "Cycles added", "Snapshots"], (d.cycle_windows || []).map(w => `<tr><td>${num(w.days,0)} days</td><td>${num(w.cycles_added,0)}</td><td>${num(w.observations,0)}</td></tr>`).join(""))}</details>`;
+  }
+  async function renderCharging(id) {
+    const [d, h, recent] = await Promise.all([
+      json("/api/charging"),
+      json("/api/habits"),
+      json("/api/workbench?hours=24"),
+    ]);
+    const ex = recent.exposure || {};
+    const a = d.aggregates || {};
+    const sessions = d.sessions.filter(
+      (s) => !hideShort || s.ended == null || s.ended - s.started >= 300,
+    );
+    const rows = sessions
+      .slice(0, 100)
+      .map(
+        (s) =>
+          `<tr><td>${esc({ battery: "Battery", charging: "AC, charging", full: "AC, holding" }[s.kind] || s.kind)}</td><td>${tsLabel(s.started)}</td><td>${s.ended == null ? "Open segment" : duration((s.ended - s.started) / 60)}</td><td>${num(s.soc_start, 0, "%")} to ${num(s.soc_end, 0, "%")}</td><td class="num">${wh(s.wh)}</td></tr>`,
+      )
+      .join("");
+    if (
+      !paint(
+        id,
+        heading(
+          "Charging patterns",
+          `Last ${d.window_days || 30} days. Holding on AC does not mean the battery is at 100%.`,
+        ) +
+          `<div class="grid">${card("Observed battery segments", num(a.battery_sec / 3600, 1, " h"))}${card("Observed AC segments", num(a.ac_sec / 3600, 1, " h"))}${card("Estimated high-charge exposure", num(h.full_pct_of_ac, 1, "% of AC time"), "Noncharging AC segments with both endpoints at least 95%.")}${card("Low-charge episodes", num(h.deep_discharges, 0), "Below 10%; counted again only after recovery to 20%.")}${card("Cycles added", num(h.cycles_30d, 0))}${card("Average charging power", num(a.avg_charge_watts, 1, " W"))}</div><p class="note">Endpoint-based exposure is an estimate, not exact time at full charge. Overnight charging alone is not treated as a problem. Missing observations limit episode counts.</p><section class="evidence-panel"><p class="eyebrow">Observed charge exposure · Last 24 hours</p><h2>How long at higher charge?</h2><div class="grid">${card("At least 80%", num(ex.above_80_h, 2, " h"))}${card("At least 90%", num(ex.above_90_h, 2, " h"))}${card("At least 95%", num(ex.above_95_h, 2, " h"))}${card("Charging temperature", num(ex.avg_charging_temp_c, 1, " °C"), `${num(ex.charging_temp_observed_h, 2)} charging hours with a sensor reading`)}</div><p class="note">${num(ex.soc_observed_h, 2)} hours with observed charge level; ${num(ex.temp_observed_h, 2)} hours with a battery temperature reading. A short observed interval counts only when both endpoint readings meet the threshold; this is a conservative exposure estimate, not exact crossing time. Thresholds overlap and are not additive. Gaps are excluded, not assumed cool or low-charge. These recent sensor observations are separate from the 30-day endpoint estimate above.</p></section><h2>Recent segments</h2><label><input id="short-toggle" type="checkbox" ${hideShort ? "checked" : ""}> Hide closed segments shorter than 5 minutes</label><p class="note">Sleep and collector restarts can split a segment. These rows are not physical battery cycles. Showing up to 100 of ${sessions.length} matching segments.</p>${table(["Power state", "Start", "Duration", "Charge", "Battery energy"], rows)}`,
+      )
+    )
+      return;
+    $("#short-toggle").addEventListener("change", (e) => {
+      hideShort = e.target.checked; save("hideShort", hideShort);
+      switchTab("charging");
+    });
+  }
+  function anomalyLabel(a) {
+    const map = {
+      __SYSTEM_THERMAL__: ["Thermal pressure", num(a.wh_today, 0, " min")],
+      __SYSTEM_SLEEP_DRAIN__: [
+        "Sleep-gap battery drop",
+        num(a.wh_today, 1, "%"),
+      ],
+      __SYSTEM_RAPID_DISCHARGE__: [
+        "High battery discharge",
+        num(a.wh_today, 1, " W"),
+      ],
+      __SYSTEM_WEAK_CHARGER__: [
+        "Battery drains while on AC",
+        num(a.wh_today, 1, " W"),
+      ],
+      __SYSTEM_FULL_PLUGGED__: [
+        "Historical high-charge event",
+        num(a.wh_today, 1, " h"),
+      ],
+      __SYSTEM_HOT_CHARGE__: [
+        "Elevated charging temperature",
+        num(a.wh_today, 1, " °C"),
+      ],
+    };
+    return (
+      map[a.app] || [
+        a.app,
+        `${wh(a.wh_today)} vs ${wh(a.wh_baseline)} baseline (${num(a.ratio, 1)}x)`,
+      ]
+    );
+  }
+  function anomalyGroups(d) {
+    const since = ranges.anomalies === "all" ? 0 : Date.now() / 1000 - (ranges.anomalies === "7d" ? 604800 : 86400);
+    const grouped = new Map();
+    d.filter(a => a.ts >= since).forEach(a => {
+      if (!grouped.has(a.app)) grouped.set(a.app, []);
+      grouped.get(a.app).push(a);
+    });
+    return [...grouped.entries()].map(([key, items]) => {
+      items.sort((a,b) => b.ts - a.ts);
+      return {key, items, latest: items[0].ts, first: items[items.length - 1].ts};
+    }).sort((a,b) => b.latest - a.latest);
+  }
+  function updateAnomalyBadge(groups) {
+    const open = groups.filter(g => !(acknowledged[g.key] >= g.latest)).length;
+    $("#anombadge").textContent = open ? `(${open})` : "";
+  }
+  async function renderAnomalies(id) {
+    const d = await json("/api/anomalies?since=0");
+    if (id !== renderId) return;
+    const groups = anomalyGroups(d);
+    updateAnomalyBadge(groups);
+    const rows = groups.map(g => {
+      const a = g.items[0], [label,value] = anomalyLabel(a), ack = acknowledged[g.key] >= g.latest;
+      return `<tr class="${ack ? "acknowledged" : ""}"><td><strong>${esc(label)}</strong><span class="process-note">${esc(processNote(a.app))}</span><span class="incident-state">${ack ? "Acknowledged" : "Needs review"}</span></td><td class="num">${g.items.length}</td><td>${tsLabel(g.first)}<span class="process-note">Latest ${tsLabel(g.latest)}</span></td><td>${esc(value)}</td><td><button data-ack="${esc(g.key)}" data-latest="${g.latest}" aria-pressed="${ack}">${ack ? "Undo" : "Acknowledge"}</button><details><summary>Evidence</summary>${g.items.map(item => `<p class="note">${tsLabel(item.ts)}: ${esc(anomalyLabel(item)[1])}${item.detail?.culprits?.length ? `. Associated activity: ${item.detail.culprits.map(c => esc(c.app)).join(", ")}` : ""}</p>`).join("")}<p class="note">Review the workload and power source around this time. System services may reflect other activity.</p></details></td></tr>`;
+    }).join("");
+    paint(id, heading("Events worth reviewing", "Grouped by app or detector type. Observations and correlations are not a diagnosis.") + rangebar("anomalies") + `<p class="local-note">Acknowledgements stay in this browser. A newer event reopens the group. Historical records retain the rules used when recorded.</p>` + table(["Event group", "Count", "First / latest", "Latest observation", "Review"],rows));
+  }
+  async function renderReport(id) {
+    const d = await json("/api/report?range=" + ranges.report),
+      a = d.analysis,
+      p = a.current,
+      prev = a.previous,
+      comp = a.comparison;
+    if (id !== renderId) return;
+    reportData = d;
+    const period = ranges.report === "30d" ? "30-day" : "7-day";
+    const summary =
+      comp.status === "ok" && comp.power_change_pct != null
+        ? `Observed battery-only power averaged ${num(p.battery_only_watts, 1, " W")} in this window versus ${num(prev.battery_only_watts, 1, " W")} previously (${signed(comp.power_change_pct)}); workload and collection coverage can differ between windows.`
+        : "There are not enough comparable battery-only hours to assess the power change between these windows.";
+    const compareRows = [
+      [
+        "Battery energy out",
+        wh(p.wh_out),
+        wh(prev.wh_out),
+        signed(comp.energy_change_pct),
+      ],
+      [
+        "Observed collection",
+        num(p.observed_h, 1, " h"),
+        num(prev.observed_h, 1, " h"),
+        signed(comp.observed_hours_change_pct),
+      ],
+      [
+        "Observed battery-only average power",
+        num(p.battery_only_watts, 1, " W"),
+        num(prev.battery_only_watts, 1, " W"),
+        signed(comp.power_change_pct),
+      ],
+    ];
+    if (
+      !paint(
+        id,
+        heading(
+          `Your ${period} battery report`,
+          `${tsLabel(p.start_ts)} to ${tsLabel(p.end_ts)} · Compared with the preceding equal ${period} window.`,
+        ) +
+          rangebar("report") + `<div class="report-actions"><button class="print-button" id="print-report">Print / Save as PDF</button><button data-export="json">Export JSON</button><button data-export="csv">Export daily CSV</button></div><p id="print-status" class="note" role="status"></p><div id="report-export-panel">${exportMarkup()}</div>` +
+          periodCards(p) +
+          `<p class="note">${coverageNote}</p><h2>What changed</h2><p>${esc(summary)}</p>${table(["Measure", "Current window", "Previous window", "Change"], compareRows.map((r) => `<tr>${r.map((v, i) => `<${i ? "td" : "th"}${i ? ' class="num"' : ' scope="row"'}>${esc(v)}</${i ? "td" : "th"}>`).join("")}</tr>`).join(""))}<p class="note">Previous coverage: ${num(prev.coverage_pct, 1, "%")}. Energy totals reflect both load and observed duration, not efficiency. Battery-only power excludes mixed AC/battery hours and needs at least 2 hours of observed collection in each window (${num(p.pure_battery_h, 1)} h this window; ${num(prev.pure_battery_h, 1)} h previously). Different workloads can explain the change. ${esc(p.power_method || "Power is averaged over collected battery time; within-hour power-sensor coverage is not known.")}</p>` +
+          (p.has_data
+            ? `<h2>Daily observed energy</h2>${canvas("daily", "Daily battery charge and discharge for this report window")}`
+            : empty("No completed hourly observations for this window.")) +
+          `<h2>Capacity context</h2>${healthCards(a.health)}<p class="note">${esc(a.health.forecast_reason || "Long-term capacity predictions require a reliable trend.")}</p><h2>Next steps</h2>${recommendations((d.recommendations || []).slice(0, 3))}<h2>Most active apps</h2><p class="note">${attributionNote} App ranking covers the same completed-hour window as this report. Recommendations use the most recent 30-day habits, independent of the report window.</p>${table(["App or process", "Estimated chip energy"], appRows(d.top_apps || [], false))}`,
+      )
+    )
+      return;
+    $("#print-report").addEventListener("click", () => {
+      try { window.print(); }
+      catch (_) { /* The fallback below also covers restricted embedded browsers. */ }
+      $("#print-status").textContent = "Print dialog requested. If your browser does not open it, open this page in Safari or Chrome and use Print.";
+    });
+    if (p.has_data) dailyChart(p.daily);
+  }
+  const renderers = {
+    now: renderNow,
+    advisor: renderAdvisor,
+    history: renderHistory,
+    apps: renderApps,
+    energy: renderEnergy,
+    health: renderHealth,
+    charging: renderCharging,
+    anomalies: renderAnomalies,
+    report: renderReport,
+  };
+  async function refresh(id) {
+    try {
+      await renderers[tab](id);
+    } catch (e) {
+      if (id !== renderId) return;
+      paint(
+        id,
+        heading(
+          "This view is unavailable",
+          "The local service may be starting, or observations may not be available yet.",
+        ) +
+          `<p class="note">${esc(e.message)}. Your saved data is unchanged.</p><button data-retry>Try again</button>`,
+      );
+    }
+  }
+  function isEditingControl(element) {
+    return !!element && (element.tagName === "TEXTAREA" || element.tagName === "SELECT" || (element.tagName === "INPUT" && !["range", "checkbox", "radio", "button", "submit"].includes(element.type)));
+  }
+  function switchTab(next) {
+    if (!Object.hasOwn(renderers, next)) return;
+    clearReportExport();
+    reportData = null;
+    tab = next;
+    const id = ++renderId;
+    clearInterval(timer);
+    destroyCharts();
+    document.querySelectorAll("#tabs button").forEach((b) => {
+      const active = b.dataset.tab === tab;
+      b.classList.toggle("active", active);
+      if (active) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
+    $("#content").innerHTML =
+      '<p class="empty" role="status">Loading observations...</p>';
+    $("#content").setAttribute("aria-busy", "true");
+    refresh(id);
+    timer = setInterval(
+      () => {
+        if (document.hidden || ($("#content").contains(document.activeElement) && isEditingControl(document.activeElement))) return;
+        refresh(++renderId);
+      },
+      tab === "now" ? 5000 : 60000,
+    );
+  }
+  async function status() {
+    try {
+      const s = await json("/api/status"),
+        age =
+          s.last_sample_ts == null
+            ? null
+            : Math.max(0, s.now_ts - s.last_sample_ts),
+        ok = age != null && age <= 180;
+      $("#livetext").textContent =
+        age == null
+          ? "Awaiting first reading"
+          : `${ok ? "Updated" : "Last reading"} ${duration(age / 60)} ago`;
+      $("#live").classList.toggle("down", !ok);
+      $("#stale").hidden = ok;
+      json("/api/anomalies?since=0").then(d => updateAnomalyBadge(anomalyGroups(d))).catch(() => {});
+    } catch (_) {
+      $("#livetext").textContent = "Local service unavailable";
+      $("#live").classList.add("down");
+      $("#stale").hidden = false;
+    }
+  }
+  $("#tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-tab]");
+    if (b) switchTab(b.dataset.tab);
+  });
+  $("#content").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.range) {
       ranges[tab] = b.dataset.range;
+      save("range." + tab, ranges[tab]);
       switchTab(tab);
-    }));
-}
-
-async function appAction(app, action) {
-  try {
-    await fetch("/api/apps/action", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app, action }) });
-    alert(app + " " +
-      { pause: "paused", resume: "resumed", kill: "killed" }[action] + ".");
-  } catch (e) { alert("Failed to " + action + " " + app); }
-}
-
-async function renderNow(renderId) {
-  let d;
-  try { d = await j("/api/now"); }
-  catch (e) {
-    if (renderId !== currentRenderId) return;
-    $("#stale").style.display = "block";
-    $("#content").innerHTML = '<div class="muted">Offline</div>';
-    return;
-  }
-  if (renderId !== currentRenderId) return;
-  $("#stale").style.display = d.staleness_sec > 180 ? "block" : "none";
-  setLive(d.staleness_sec <= 180, "live · " + d.staleness_sec + "s ago");
-  $("#awake").checked = d.awake;
-  renderLongevity(d);
-
-  let warningsHTML = "";
-  if (d.radio_warnings && d.radio_warnings.length > 0) {
-    for (const rw of d.radio_warnings) {
-      const wid = "rw-" + rw.ts;
-      if (dismissedWarnings.has(wid)) continue;
-      warningsHTML += `<div class="card" style="border-left: 4px solid var(--warning); background: rgba(255, 204, 0, 0.05); margin-bottom: 8px; padding: 12px 16px;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div style="font-size: 14px;"><strong style="color:var(--warning)">Radio Issue:</strong> ${escapeHTML(rw.reason || "Unknown")} at ${tsLabel(rw.ts)}</div>
-          <button onclick="dismissWarning('${wid}')" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:16px;">✖</button>
-        </div>
-      </div>`;
+    } else if (b.dataset.reserve) {
+      reserve = Number(b.dataset.reserve); save("reserve", reserve); refresh(++renderId);
+    } else if (b.dataset.purpose) {
+      purpose = b.dataset.purpose; save("purpose", purpose); refresh(++renderId);
+    } else if (b.dataset.source) {
+      appSource = b.dataset.source; save("appSource", appSource); refresh(++renderId);
+    } else if (b.dataset.journal) {
+      const key = b.dataset.journal;
+      if (journal[key]) delete journal[key]; else journal[key] = Math.floor(Date.now()/1000);
+      save("journal", journal); refresh(++renderId);
+    } else if (b.dataset.ack) {
+      const key = b.dataset.ack;
+      if (acknowledged[key] >= Number(b.dataset.latest)) delete acknowledged[key];
+      else acknowledged[key] = Number(b.dataset.latest);
+      save("acknowledged", acknowledged); refresh(++renderId);
+    } else if (b.id === "experiment-start") {
+      if (!$("#experiment-ready")?.checked) return;
+      experiment = {start: Math.floor(Date.now()/1000)};
+      save("experiment", experiment); refresh(++renderId);
+    } else if (b.dataset.experiment) {
+      const action = b.dataset.experiment, now = Math.floor(Date.now()/1000);
+      if (action === "finish" && experiment?.split && now - experiment.split >= 300) return finishExperiment(now);
+      if (action === "cancel") { experiment = null; experimentReady = false; }
+      else if (action === "split" && experiment && now - experiment.start >= 300) experiment.split = now;
+      save("experiment", experiment); refresh(++renderId);
+    } else if (b.dataset.export) exportReport(b.dataset.export);
+    else if (b.id === "copy-export") copyExport();
+    else if (b.dataset.go) switchTab(b.dataset.go);
+    else if (b.hasAttribute("data-retry")) switchTab(tab);
+    else if (b.dataset.dismiss) {
+      dismissed.add(b.dataset.dismiss);
+      refresh(++renderId);
     }
-  }
-  if (d.dark_wakes && d.dark_wakes.length > 0) {
-    for (const dw of d.dark_wakes) {
-      const wid = "dw-" + dw.ts;
-      if (dismissedWarnings.has(wid)) continue;
-      // Only show the sleep-gap duration when it is coherent (>= 1 min).
-      // Legacy rows stored a single ~5s wake, which renders as "0h 0m".
-      const durPart = dw.duration_sec >= 60 ? `over ${fmtDur(dw.duration_sec)} ` : "";
-      const cul = dw.culprits || [];
-      const woke = cul.filter(c => c.why === "woke").map(c => escapeHTML(c.proc));
-      const held = cul.filter(c => c.why === "kept-awake").map(c => escapeHTML(c.proc));
-      let culLine = "";
-      if (woke.length) culLine += ` · woke: ${woke.join(", ")}`;
-      if (held.length) culLine += ` · held: ${held.join(", ")}`;
-      warningsHTML += `<div class="card" style="border-left: 4px solid var(--purple); background: rgba(179, 102, 255, 0.05); margin-bottom: 8px; padding: 12px 16px;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div style="font-size: 14px;"><strong style="color:var(--purple)">Dark Wake:</strong> ${escapeHTML(dw.reason || "Unknown")} drained ${fmtWh(dw.wh_drained || 0)} ${durPart}at ${tsLabel(dw.ts)}${culLine}</div>
-          <button onclick="dismissWarning('${wid}')" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:16px;">✖</button>
-        </div>
-      </div>`;
-    }
-    if (d.frequent_culprit && d.dark_wakes && d.dark_wakes.length > 1) {
-      const fc = d.frequent_culprit;
-      warningsHTML += `<div class="card" style="border-left: 4px solid var(--warning); background: rgba(255, 204, 0, 0.05); margin-bottom: 8px; padding: 12px 16px;">
-        <div style="font-size: 14px;">⚠️ <strong style="color:var(--warning)">Frequent culprit:</strong> ${escapeHTML(fc.proc)} (${fc.n} of last ${d.dark_wakes.length} drains)</div>
-      </div>`;
-    }
-  }
-  const rwContainer = $("#radio-warnings-container");
-  if (rwContainer) {
-    rwContainer.innerHTML = warningsHTML;
-  }
-
-  const s = d.sample, f = d.forecast || {}, h = d.health, c = d.component,
-        sess = d.session;
-  const dir = s.watts > 0 ? "^" : (s.watts < 0 ? "v" : "-");
-  const chip = f.minutes != null
-    ? `<span class="chip">${f.mode === "charging" ? "full in " : "~"}${fmtMin(f.minutes)}${f.mode === "charging" ? "" : " left"}</span>`
-    : "";
-  const src = s.on_ac ? (s.is_charging ? "charging" : "on AC") : "on battery";
-  const cards = [];
-  cards.push(["Charge", h
-    ? `${h.raw_current_capacity_mah.toFixed(0)} / ${h.raw_max_capacity_mah.toFixed(0)} mAh`
-    : "collecting"]);
-  cards.push(["Health", h
-    ? `${h.max_capacity_pct.toFixed(0)}% · ${h.cycle_count} cycles`
-    : "collecting"]);
-  const socTemp = c && c.soc_temp_c != null ? c.soc_temp_c.toFixed(0) + " C" : "-";
-  const ssdTemp = c && c.ssd_temp_c != null ? c.ssd_temp_c.toFixed(0) + " C" : "-";
-  const batTemp = s.temp_c != null ? s.temp_c.toFixed(0) + " C" : "-";
-  const therm = c && c.thermal_pressure ? escapeHTML(c.thermal_pressure.toLowerCase()) : "-";
-  cards.push(["Temp / thermal",
-    `SoC (CPU/GPU) ${socTemp} - SSD ${ssdTemp} - Battery ${batTemp} - ${therm}`]);
-  cards.push(["Brightness",
-    s.brightness_pct != null ? s.brightness_pct.toFixed(0) + "%" : "-"]);
-  if (sess && sess.soc_now != null) {
-    const delta = sess.soc_now - sess.soc_start;
-    cards.push(["Session",
-      `${fmtDur(sess.duration_sec)} · ${delta >= 0 ? "+" : ""}${delta.toFixed(0)}% · ${sess.wh != null ? fmtWh(sess.wh) : "-"}`]);
-  }
-  if (d.devices && d.devices.length > 0) {
-    for (const dev of d.devices) {
-      cards.push([dev.name, dev.battery_pct + "%"]);
-    }
-  }
-  const cardHTML = cards.map(([k, v]) =>
-    `<div class="card"><div class="k">${escapeHTML(k)}</div><div class="v">${escapeHTML(v)}</div></div>`
-  ).join("");
-  let compHTML = "";
-  if (c && c.package_mw != null) {
-    const pkg = Math.max(c.package_mw, 1);
-    const row = (lbl, mw, desc) => `<div class="barrow" title="${escapeHTML(desc)}"><span class="lbl" style="cursor:help; border-bottom:1px dotted var(--text-muted);">${lbl}</span>
-      <span class="minibar-track"><span class="minibar" style="width:${Math.min(100, (mw || 0) / pkg * 100).toFixed(0)}%"></span></span>
-      <span class="val">${(mw || 0).toFixed(0)} <abbr title="Milliwatts (Power Consumption)">mW</abbr></span></div>`;
-    compHTML = `<h3 style="cursor:help; border-bottom:1px dotted var(--text-muted); display:inline-block;" title="Total power consumption of the main Apple Silicon chip (System-on-Chip)">Package now: ${c.package_mw.toFixed(0)} <abbr title="Milliwatts (Power Consumption)">mW</abbr></h3>` +
-      row("CPU", c.cpu_mw, "Central Processing Unit (Main general-purpose processor core consumption)") + 
-      row("GPU", c.gpu_mw, "Graphics Processing Unit (Graphics, video, and display processing)") + 
-      row("ANE", c.ane_mw, "Apple Neural Engine (Hardware acceleration for AI and Machine Learning tasks)");
-  }
-  const maxWh = Math.max(...d.top_apps.map(a => a.attributed_wh), 1e-9);
-  const rows = d.top_apps.map(a => {
-    let pctStr = "";
-    if (d.health && d.health.design_capacity_mah) {
-      // Nominal MacBook battery voltage is ~11.4V. Wh = mAh * 11.4 / 1000
-      const totalWh = (d.health.design_capacity_mah * 11.4) / 1000;
-      const pct = (a.attributed_wh / totalWh) * 100;
-      if (pct >= 0.05) {
-        pctStr = ` <span style="font-size: 11px; margin-left: 4px;">(${pct.toFixed(1)}%)</span>`;
-      } else {
-        pctStr = ` <span style="font-size: 11px; margin-left: 4px;">(<0.1%)</span>`;
+  });
+  $("#content").addEventListener("input", e => {
+    if (e.target.id === "goal-duration") {
+      const value = Number(e.target.value) * (goalUnit === "hours" ? 60 : 1);
+      if (!Number.isFinite(value) || value < 15 || value > 1440) {
+        $("#goal-result").textContent = "Choose a duration between 15 minutes and 24 hours.";
+        return;
       }
+      goalMinutes = value; save("goalMinutes", goalMinutes);
+      $("#goal-result").textContent = goalResult(lastNow);
     }
-    return `<tr class="app-row">
-    <td>${escapeHTML(a.app)}</td>
-    <td style="width:40%"><div class="sharebar-wrapper"><div class="sharebar" style="width:${Math.max(2, a.attributed_wh / maxWh * 100).toFixed(0)}%"></div></div></td>
-    <td style="text-align:right;color:var(--text-muted);white-space:nowrap;">${fmtWh(a.attributed_wh)}${pctStr}</td>
-    <td class="app-actions">
-      <button data-app="${escapeHTML(a.app)}" data-action="pause" class="btn-pause" title="Pause (SIGSTOP)">||</button>
-      <button data-app="${escapeHTML(a.app)}" data-action="resume" class="btn-resume" title="Resume (SIGCONT)">▶</button>
-      <button data-app="${escapeHTML(a.app)}" data-action="kill" class="btn-kill" title="Kill (SIGTERM)">✖</button>
-    </td>
-    </tr>`;
-  }).join("");
-  $("#content").innerHTML = `
-    <div class="big">${Math.abs(s.watts).toFixed(1)} W ${dir} ${s.soc_pct}%
-      ${chip}<span class="chip gray">${src}</span></div>
-    <div class="grid">${cardHTML}</div>
-    ${compHTML}
-    <h3>Top apps, last hour (attributed)</h3>
-    <table class="app-table">${rows || "<tr><td class='muted'>no attribution data yet - it appears within a minute of the daemon running</td></tr>"}</table>`;
-}
-
-async function renderHistory(renderId) {
-  const rng = ranges.history;
-  const [d, nowData] = await Promise.all([
-    j("/api/history?range=" + rng),
-    j("/api/now")
-  ]);
-  if (renderId !== currentRenderId) return;
-  $("#content").innerHTML = rangeButtons("history") +
-    (d.battery.length === 0
-      ? emptyNote("no data in this range yet - 24h shows minute-level data as soon as the daemon runs; 7d/30d fill in after the first full hour")
-      : '<h3>Battery</h3><canvas id="c1"></canvas><h3>Components</h3><canvas id="c2"></canvas><h3>Temperature</h3><canvas id="c3"></canvas>');
-  bindRangeButtons("history");
-  if (d.battery.length === 0) return;
-  const bLabels = d.battery.map(r => tsLabel(r.ts));
-  
-  const socSets = rng === "24h"
-    ? [{ label: "SoC %", data: d.battery.map(r => r.soc_pct), yAxisID: "y",
-         borderColor: colors.accent, backgroundColor: "rgba(0, 210, 255, 0.1)", fill: true, borderWidth: 2 }]
-    : [{ label: "SoC max %", data: d.battery.map(r => r.soc_max), yAxisID: "y",
-         borderColor: colors.accent, backgroundColor: "rgba(0, 210, 255, 0.1)", fill: true, borderWidth: 2 },
-       { label: "SoC min %", data: d.battery.map(r => r.soc_min), yAxisID: "y",
-         borderColor: "rgba(0, 210, 255, 0.4)", borderWidth: 1 }];
-
-  const extraSets = [];
-  
-  if (nowData.charge_limit) {
-    const level = nowData.charge_limit.level != null ? nowData.charge_limit.level : 80;
-    extraSets.push({
-      label: `${level}% target`,
-      data: Array(d.battery.length).fill(level),
-      yAxisID: "y",
-      borderColor: "rgba(255, 99, 132, 0.8)",
-      borderWidth: 1,
-      borderDash: [5, 5],
-      pointRadius: 0,
-      fill: false
-    });
-  }
-
-  if (rng === "24h") {
-    extraSets.push({
-      label: "Awake State",
-      data: d.battery.map(r => r.assert_awake ? 100 : 0),
-      yAxisID: "y",
-      backgroundColor: "rgba(255, 204, 0, 0.1)",
-      borderColor: "transparent",
-      borderWidth: 0,
-      pointRadius: 0,
-      fill: true,
-      stepped: true
-    });
-  }
-
-  addChart($("#c1"), { type: "line", data: { labels: bLabels, datasets: [
-    ...extraSets,
-    ...socSets,
-    { label: "watts", data: d.battery.map(r => r.watts), yAxisID: "y2",
-      borderColor: colors.orange, backgroundColor: "rgba(255, 136, 51, 0.1)", fill: true, borderWidth: 1 },
-  ]}, options: { scales: {
-    y: { min: 0, max: 100, title: { display: true, text: "%" } },
-    y2: { position: "right", title: { display: true, text: "W" },
-          grid: { drawOnChartArea: false } } } } });
-  const cLabels = d.components.map(r => tsLabel(r.ts));
-  addChart($("#c2"), { type: "line", data: { labels: cLabels, datasets: [
-    { label: "CPU mW", data: d.components.map(r => r.cpu_mw), borderColor: colors.accent, borderWidth: 2 },
-    { label: "GPU mW", data: d.components.map(r => r.gpu_mw), borderColor: colors.success, borderWidth: 2 },
-    { label: "ANE mW", data: d.components.map(r => r.ane_mw), borderColor: colors.purple, borderWidth: 2 },
-    { label: "Package mW", data: d.components.map(r => r.package_mw), borderColor: colors.orange, borderWidth: 2, borderDash: [5, 5] },
-  ]}});
-  
-  if (d.temperature && d.temperature.length > 0) {
-    const tLabels = d.temperature.map(r => tsLabel(r.ts));
-    addChart($("#c3"), { type: "line", data: { labels: tLabels, datasets: [
-      { label: "SoC °C", data: d.temperature.map(r => r.soc_temp_c), borderColor: colors.accent, borderWidth: 2 },
-      { label: "SSD °C", data: d.temperature.map(r => r.ssd_temp_c), borderColor: colors.purple, borderWidth: 2 },
-      { label: "Battery °C", data: d.temperature.map(r => r.temp_c), borderColor: colors.orange, borderWidth: 2 }
-    ]}});
-  }
-}
-
-async function renderApps(renderId) {
-  const d = await j(`/api/apps?range=${ranges.apps}&include_system=${includeSystem}`);
-  if (renderId !== currentRenderId) return;
-  const toggle = `<button id="systoggle">${includeSystem ? "hide" : "show"} system</button>`;
-  const top = d.slice(0, 15);
-  $("#content").innerHTML = rangeButtons("apps", toggle) +
-    (top.length === 0
-      ? emptyNote("no attribution data in this range yet")
-      : '<canvas id="c1"></canvas>');
-  bindRangeButtons("apps");
-  $("#systoggle").addEventListener("click", () => {
-    includeSystem = !includeSystem;
-    switchTab("apps");
   });
-  if (top.length === 0) return;
-  addChart($("#c1"), { type: "bar", data: {
-    labels: top.map(a => a.app),
-    datasets: [{ label: "Attributed Wh",
-      data: top.map(a => a.attributed_wh), backgroundColor: "rgba(0, 210, 255, 0.6)", borderColor: colors.accent, borderWidth: 1, borderRadius: 4, hoverBackgroundColor: colors.accent }]
-  }, options: { indexAxis: "y", plugins: { tooltip: { callbacks: {
-    label: (ctx) => fmtWh(ctx.parsed.x) + " · " +
-      top[ctx.dataIndex].share_pct.toFixed(1) + "%" } } } } });
-}
-
-async function renderEnergy(renderId) {
-  const d = await j("/api/energy?range=" + ranges.energy);
-  if (renderId !== currentRenderId) return;
-  $("#content").innerHTML = rangeButtons("energy") +
-    (d.length === 0
-      ? emptyNote("no energy buckets yet - the first one appears within a minute")
-      : '<canvas id="c1"></canvas><p class="muted">bars: discharged / charged energy per bucket; line: average display brightness; the last bucket is in progress</p>');
-  bindRangeButtons("energy");
-  if (d.length === 0) return;
-  addChart($("#c1"), { type: "bar", data: {
-    labels: d.map(r => tsLabel(r.ts) + (r.partial ? " *" : "")),
-    datasets: [
-      { label: "Discharged Wh", data: d.map(r => r.wh_out), backgroundColor: "rgba(255, 136, 51, 0.6)", borderColor: colors.orange, borderWidth: 1, borderRadius: 4 },
-      { label: "Charged Wh", data: d.map(r => r.wh_in), backgroundColor: "rgba(0, 255, 136, 0.6)", borderColor: colors.success, borderWidth: 1, borderRadius: 4 },
-      { label: "Brightness %", type: "line", data: d.map(r => r.avg_brightness),
-        yAxisID: "y2", borderColor: colors.muted, borderWidth: 2 },
-    ]}, options: { scales: {
-      y: { title: { display: true, text: "Wh" } },
-      y2: { position: "right", min: 0, max: 100,
-            grid: { drawOnChartArea: false } } } } });
-}
-
-async function renderHealth(renderId) {
-  const [rows, now, pred, advice] = await Promise.all([
-    j("/api/health"), j("/api/now"), j("/api/health/forecast"),
-    j("/api/advisor")
-  ]);
-  if (renderId !== currentRenderId) return;
-  const h = now.health;
-  
-  let extraCards = "";
-  if (h && h.cell_voltage_mv && h.lifetime_temp_min !== undefined) {
-    const minTemp = h.lifetime_temp_min.toFixed(1);
-    const maxTemp = h.lifetime_temp_max.toFixed(1);
-    const avgTemp = h.lifetime_temp_avg.toFixed(1);
-    const opDays = (h.operating_time_hours / 24).toFixed(0);
-    const cells = h.cell_voltage_mv;
-    const maxCell = Math.max(...cells);
-    const minCell = Math.min(...cells);
-    const diff = maxCell - minCell;
-    const diffColor = diff > 50 ? "var(--danger)" : "var(--success)";
-    const tempColor = h.lifetime_temp_max > 40 ? "var(--warning)" : "var(--success)";
-    
-    extraCards = `
-    <h3 style="margin-top:24px"><span style="font-size:18px">🔬</span> Deep Diagnostics</h3>
-    <div class="grid">
-      <div class="card" style="border-top: 2px solid var(--accent)">
-        <div class="k">🔋 Cell Balance</div>
-        <div class="v" style="font-size:16px">${cells.join(' / ')} mV</div>
-        <div class="k" style="margin-top:8px; color: ${diffColor}">Imbalance: ${diff} mV</div>
-      </div>
-      <div class="card" style="border-top: 2px solid ${tempColor}">
-        <div class="k">🌡️ Lifetime Temps</div>
-        <div class="v" style="font-size:16px">${minTemp}°C - <span style="color:${tempColor}">${maxTemp}°C</span></div>
-        <div class="k" style="margin-top:8px">Avg: ${avgTemp}°C</div>
-      </div>
-      <div class="card" style="border-top: 2px solid var(--purple)">
-        <div class="k">⏱️ Battery Age</div>
-        <div class="v">${opDays} days</div>
-        <div class="k" style="margin-top:8px">Active operating time</div>
-      </div>
-    </div>`;
-  }
-
-  let predCard;
-  if (pred.status === "ok") {
-    predCard = `<div class="grid" style="margin-bottom:24px">
-        <div class="card"><div class="k">📈 Health in 1 year</div>
-          <div class="v">${pred.pct_in_1y.toFixed(1)}%</div>
-          <div class="muted">from ${pred.current_pct.toFixed(1)}% now, ${(pred.slope_pct_per_day * 30).toFixed(2)}%/month trend</div></div>
-        <div class="card"><div class="k">📉 Health in 2 years</div>
-          <div class="v">${pred.pct_in_2y.toFixed(1)}%</div>
-          <div class="muted">robust trend over weekly medians - an estimate, not a promise</div></div>
-      </div>`;
-  } else if (pred.status === "unstable_trend") {
-    predCard = `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
-      <div class="muted" style="margin-top:8px">Enough history has been collected, but capacity readings do not form a reliable trend yet. Current health is shown below; the forecast will appear automatically when the trend stabilizes.</div></div>`;
-  } else {
-    const ready = pred.estimated_ready_day
-      ? ` Earliest estimate: ${escapeHTML(pred.estimated_ready_day)}.`
-      : "";
-    predCard = `<div class="card" style="margin-bottom:24px"><div class="k">📈 Health forecast</div>
-      <div class="muted" style="margin-top:8px">${pred.points || 0}/${pred.required_points} daily measurements collected, covering ${pred.span_days || 0}/${pred.required_span_days} required calendar days and ${pred.weeks || 0}/${pred.required_weeks} weeks.${ready} Current health and recommendations are already available below.</div></div>`;
-  }
-
-  const cards = h ? `<div class="grid">
-    <div class="card"><div class="k">Max capacity</div><div class="v">${h.max_capacity_pct.toFixed(1)}%</div></div>
-    <div class="card"><div class="k">Cycle count</div><div class="v">${h.cycle_count}</div></div>
-    <div class="card"><div class="k">Full charge</div><div class="v">${h.raw_max_capacity_mah.toFixed(0)} mAh</div></div>
-    <div class="card"><div class="k">Design</div><div class="v">${h.design_capacity_mah.toFixed(0)} mAh</div></div>
-  </div>${extraCards}` : emptyNote("no health data yet");
-
-  const healthRecCards = advice.recommendations.length === 0
-    ? `<div class="card"><div class="k">✅ All clear</div><div class="muted" style="margin-top:8px">No habit issues detected in the last 30 days.</div></div>`
-    : advice.recommendations.map(r => `
-      <div class="card" style="border-top: 2px solid ${SEV_COLOR[r.severity]}">
-        <div class="k" style="color:${SEV_COLOR[r.severity]}">${r.severity.toUpperCase()} - ${escapeHTML(r.title)}</div>
-        <div class="muted" style="margin-top:8px; font-size:13px; line-height:1.5">${escapeHTML(r.body)}</div>
-      </div>`).join("");
-  const scoreText = advice.score == null
-    ? ""
-    : ` <span class="chip${advice.grade === "fair" ? " gray" : advice.grade === "poor" ? " red" : ""}">${advice.score}/100 - ${escapeHTML(advice.grade)}</span>`;
-  const recommendationSection = `
-    <h3 style="margin-top:24px">Recommendations${scoreText}</h3>
-    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))">${healthRecCards}</div>`;
-  
-  $("#content").innerHTML = predCard + cards + recommendationSection +
-    (rows.length < 2
-      ? emptyNote("trend appears after a few daily snapshots (one is taken when the daemon starts and then once per day)")
-      : '<h3 style="margin-top:24px"><span style="font-size:18px">📉</span> Capacity Trend</h3><canvas id="c1"></canvas>');
-  if (rows.length < 2) return;
-  addChart($("#c1"), { type: "line", data: {
-    labels: rows.map(r => r.day),
-    datasets: [
-      { label: "Max Capacity %", data: rows.map(r => r.max_capacity_pct),
-        yAxisID: "y", borderColor: colors.accent, backgroundColor: "rgba(0, 210, 255, 0.1)", fill: true, borderWidth: 2 },
-      { label: "Cycles", data: rows.map(r => r.cycle_count),
-        yAxisID: "y2", borderColor: colors.orange, borderWidth: 2 },
-    ]}, options: { scales: { y2: { position: "right",
-      grid: { drawOnChartArea: false } } } } });
-}
-
-async function renderCharging(renderId) {
-  const [d, hb] = await Promise.all([j("/api/charging"), j("/api/habits")]);
-  if (renderId !== currentRenderId) return;
-  const a = d.aggregates;
-  const hist = a.discharge_depth_hist || {};
-  const histKeys = Object.keys(hist).sort(
-    (x, y) => parseInt(x) - parseInt(y));
-    
-  const rows = d.sessions.slice(0, 50).map(s => {
-    const isNow = !s.ended;
-    const kindChip = s.kind === "AC" 
-      ? `<span class="chip" style="color:var(--success);border-color:rgba(0,255,136,0.3);background:rgba(0,255,136,0.1);box-shadow:0 0 10px rgba(0,255,136,0.1)">🔌 AC</span>` 
-      : `<span class="chip" style="color:var(--warning);border-color:rgba(255,204,0,0.3);background:rgba(255,204,0,0.1);box-shadow:0 0 10px rgba(255,204,0,0.1)">🔋 Battery</span>`;
-    
-    return `<tr ${isNow ? 'style="background: rgba(0, 210, 255, 0.05);"' : ''}>
-    <td>${kindChip}${isNow ? ' <span class="chip" style="animation: pulse 2s infinite; border-color:var(--accent); color:var(--accent); background:rgba(0,210,255,0.1)">live</span>' : ''}</td>
-    <td>${new Date(s.started * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</td>
-    <td>${s.ended ? new Date(s.ended * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '<span style="color:var(--accent);text-shadow:0 0 8px var(--accent-glow)">open</span>'}</td>
-    <td><span style="color:var(--text-main); font-weight: 600">${s.soc_start}%</span> <span style="color:var(--text-muted)">➔</span> <span style="color:var(--text-main); font-weight: 600">${s.soc_end != null ? s.soc_end + "%" : "-"}</span></td>
-    <td style="text-align:right; font-weight:600; color:${s.kind === 'AC' ? 'var(--success)' : 'var(--warning)'}">${s.wh != null ? fmtWh(s.wh) : "-"}</td></tr>`;
-  }).join("");
-  
-  $("#content").innerHTML = `
-    <div class="grid">
-      <div class="card" style="border-top: 2px solid var(--warning)">
-        <div class="k">🔋 Time on Battery</div>
-        <div class="v">${(a.battery_sec / 3600).toFixed(1)} h</div>
-      </div>
-      <div class="card" style="border-top: 2px solid var(--success)">
-        <div class="k">🔌 Time on AC</div>
-        <div class="v">${(a.ac_sec / 3600).toFixed(1)} h</div>
-      </div>
-      <div class="card" style="border-top: 2px solid var(--accent)">
-        <div class="k">⚡ Avg Charge Power</div>
-        <div class="v">${a.avg_charge_watts != null ? a.avg_charge_watts.toFixed(1) + " W" : "-"}</div>
-      </div>
-    </div>
-    <h3><span style="font-size:18px">🧭</span> Charging Habits (30 days)</h3>
-    <div class="grid">
-      <div class="card">
-        <div class="k">Time at full while plugged</div>
-        <div class="v">${hb.full_pct_of_ac != null ? hb.full_pct_of_ac.toFixed(0) + "% of AC time" : "-"}</div>
-      </div>
-      <div class="card">
-        <div class="k">Plugged-in share</div>
-        <div class="v">${hb.ac_share_pct != null ? hb.ac_share_pct.toFixed(0) + "%" : "-"}</div>
-      </div>
-      <div class="card">
-        <div class="k">Overnight charges</div>
-        <div class="v">${hb.overnight_sessions}</div>
-      </div>
-      <div class="card">
-        <div class="k">Deep discharges (&lt;10%)</div>
-        <div class="v">${hb.deep_discharges}</div>
-      </div>
-      <div class="card">
-        <div class="k">Cycles added</div>
-        <div class="v">${hb.cycles_30d != null ? hb.cycles_30d : "-"}</div>
-      </div>
-      <div class="card">
-        <div class="k">Avg battery temp</div>
-        <div class="v">${hb.avg_temp_c != null ? hb.avg_temp_c.toFixed(1) + " °C" : "-"}</div>
-      </div>
-    </div>
-    ${histKeys.length ? '<h3 style="margin-top:32px"><span style="font-size:18px">📉</span> Discharge Depth Overview</h3><canvas id="c1" style="max-height:220px; margin-bottom: 24px;"></canvas>' : ""}
-    <h3 style="margin-top:24px"><span style="font-size:18px">⏱️</span> Recent Sessions</h3>
-    <table><tr><th>Type</th><th>Start</th><th>End</th><th>SoC Shift</th><th style="text-align:right">Energy</th></tr>
-    ${rows || "<tr><td class='muted' colspan='5'>no sessions yet</td></tr>"}</table>`;
-    
-  if (histKeys.length) {
-    addChart($("#c1"), { type: "bar", data: {
-      labels: histKeys.map(k => k + "%"),
-      datasets: [{ label: "Discharge Sessions", data: histKeys.map(k => hist[k]),
-        backgroundColor: "rgba(0, 210, 255, 0.6)", borderColor: "var(--accent)", borderWidth: 1, borderRadius: 4, hoverBackgroundColor: "var(--accent)" }]
-    }});
-  }
-}
-
-async function renderAnomalies(renderId) {
-  const d = await j("/api/anomalies?since=0");
-  if (renderId !== currentRenderId) return;
-  if (d.length === 0) {
-    $("#content").innerHTML = emptyNote(
-      "no anomalies detected. Anomalies track apps using 2x their 7-day average, as well as system issues like high thermal pressure, sleep drain, rapid discharge, or a weak charger.");
-    return;
-  }
-  const rows = d.slice().reverse().map(a => {
-    let appText = escapeHTML(a.app);
-    let todayText = `${a.wh_today.toFixed(1)} Wh`;
-    let baselineText = `${a.wh_baseline.toFixed(1)} Wh`;
-    let ratioText = `${a.ratio.toFixed(1)}x`;
-
-    if (a.app === "__SYSTEM_THERMAL__") {
-        appText = "🌡️ High Thermal Pressure";
-        todayText = `${a.wh_today.toFixed(0)} mins`;
-        baselineText = "5 mins threshold";
-        ratioText = "-";
-    } else if (a.app === "__SYSTEM_SLEEP_DRAIN__") {
-        appText = "⚠️ High Sleep Drain";
-        todayText = `${a.wh_today.toFixed(1)}% dropped`;
-        baselineText = "5% threshold";
-        ratioText = "-";
-    } else if (a.app === "__SYSTEM_RAPID_DISCHARGE__") {
-        appText = "⚡ Rapid Discharge";
-        todayText = `${a.wh_today.toFixed(1)}W avg`;
-        baselineText = "30W threshold";
-        ratioText = "-";
-    } else if (a.app === "__SYSTEM_WEAK_CHARGER__") {
-        appText = "🔌 Weak Charger - charging is bad";
-        todayText = `${a.wh_today.toFixed(1)}W draining while plugged in`;
-        baselineText = "should be charging";
-        ratioText = "-";
-    } else if (a.app === "__SYSTEM_FULL_PLUGGED__") {
-        appText = "🔋 Held at 100% on AC";
-        todayText = `${a.wh_today.toFixed(0)}h at full`;
-        baselineText = "3h threshold";
-        ratioText = "-";
-    } else if (a.app === "__SYSTEM_HOT_CHARGE__") {
-        appText = "🔥 Hot Charging";
-        todayText = `${a.wh_today.toFixed(1)} °C avg while charging`;
-        baselineText = "38 °C threshold";
-        ratioText = "-";
+  $("#content").addEventListener("change", e => {
+    if (e.target.id === "goal-unit") {
+      goalUnit = e.target.value; save("goalUnit", goalUnit);
+      const input = $("#goal-duration");
+      input.value = goalUnit === "hours" ? goalMinutes/60 : goalMinutes;
+      input.min = input.step = goalUnit === "hours" ? .25 : 15;
+      input.max = goalUnit === "hours" ? 24 : 1440;
     }
-
-    let rowHTML = `<tr ${a.detail ? 'style="border-bottom: none;"' : ''}>
-    <td ${a.detail ? 'style="border-bottom: none;"' : ''}>${new Date(a.ts * 1000).toLocaleString()}</td>
-    <td ${a.detail ? 'style="border-bottom: none;"' : ''}>${appText}</td>
-    <td ${a.detail ? 'style="border-bottom: none;"' : ''}>${todayText}</td>
-    <td ${a.detail ? 'style="border-bottom: none;"' : ''}>${baselineText}</td>
-    <td ${a.detail ? 'style="border-bottom: none;"' : ''}>${ratioText}</td></tr>`;
-
-    if (a.detail) {
-      const culpritsText = a.detail.culprits ? a.detail.culprits.map(c => {
-        const w = (typeof c.wh === "number" && c.wh > 0) ? ` (${c.wh.toFixed(1)} Wh)` : "";
-        return `${escapeHTML(c.app)}${w}`;
-      }).join(", ") : "";
-      const adviceText = a.detail.advice ? escapeHTML(a.detail.advice) : "";
-      let detailContent = "";
-      if (culpritsText) detailContent += `Caused by: ${culpritsText}`;
-      if (culpritsText && adviceText) detailContent += ` - `;
-      if (adviceText) detailContent += `What to do: ${adviceText}`;
-      
-      rowHTML += `<tr><td colspan="5" class="muted" style="padding-top: 0; padding-bottom: 12px;">${detailContent}</td></tr>`;
+    if (e.target.id === "experiment-ready") {
+      experimentReady = e.target.checked;
+      $("#experiment-start").disabled = !experimentReady;
     }
-    return rowHTML;
-  }).join("");
-  $("#content").innerHTML = `
-    <table><tr><th>when</th><th>app/event</th><th>value</th><th>baseline</th><th>ratio</th></tr>
-    ${rows}</table>`;
-}
-
-const SEV_COLOR = { high: "var(--danger)", medium: "var(--warning)", low: "var(--accent)" };
-
-async function renderAdvisor(renderId) {
-  const d = await j("/api/advisor");
-  if (renderId !== currentRenderId) return;
-  if (d.score == null) {
-    $("#content").innerHTML = emptyNote(
-      "not enough history for a score yet - habits build up from sessions and daily rollups over the first days of running");
-    return;
-  }
-  const gradeChip = { excellent: "", good: "", fair: " gray", poor: " red" }[d.grade] || " gray";
-  const compRows = d.components.map(c => `
-    <div class="barrow">
-      <span class="lbl" style="width:160px">${escapeHTML(c.name)}</span>
-      <span class="minibar-track"><span class="minibar" style="width:${(c.points / c.max * 100).toFixed(0)}%"></span></span>
-      <span class="val">${c.points}/${c.max}</span>
-      <span class="muted" style="flex-basis:100%; margin-left:172px">${escapeHTML(c.why)}</span>
-    </div>`).join("");
-  const recCards = d.recommendations.length === 0
-    ? `<div class="card"><div class="k">✅ All clear</div><div class="muted" style="margin-top:8px">No habit issues detected in the last 30 days.</div></div>`
-    : d.recommendations.map(r => `
-      <div class="card" style="border-top: 2px solid ${SEV_COLOR[r.severity]}">
-        <div class="k" style="color:${SEV_COLOR[r.severity]}">${r.severity.toUpperCase()} - ${escapeHTML(r.title)}</div>
-        <div class="muted" style="margin-top:8px; font-size:13px; line-height:1.5">${escapeHTML(r.body)}</div>
-      </div>`).join("");
-  $("#content").innerHTML = `
-    <div class="big">Battery Score: ${d.score}/100
-      <span class="chip${gradeChip}">${d.grade}</span></div>
-    <h3>Score breakdown</h3>
-    <div class="card" style="display:flex; flex-direction:column; gap:4px">${compRows}</div>
-    <h3>Recommendations</h3>
-    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))">${recCards}</div>`;
-}
-
-const RENDER = { now: renderNow, advisor: renderAdvisor, history: renderHistory,
-                 apps: renderApps, energy: renderEnergy, health: renderHealth,
-                 charging: renderCharging, anomalies: renderAnomalies,
-                 report: renderReport };
-
-function switchTab(tab) {
-  currentTab = tab;
-  currentRenderId++;
-  const rid = currentRenderId;
-  destroyCharts();
-  document.querySelectorAll("#tabs button").forEach(b =>
-    b.classList.toggle("active", b.dataset.tab === tab));
-  clearInterval(pollTimer);
-  RENDER[tab](rid).catch(e => {
-    if (rid !== currentRenderId) return;
-    $("#content").textContent = String(e);
   });
-  if (tab === "now") {
-    pollTimer = setInterval(() => renderNow(currentRenderId), 5000);
-  } else {
-    pollTimer = setInterval(() => RENDER[tab](currentRenderId), 60000);
+  async function finishExperiment(now) {
+    // End at the last stored reading. A click-time end has no covering sample
+    // yet, and a source change right after finishing would never cover it.
+    try {
+      const st = await json("/api/status");
+      const end = Math.min(now, st.last_sample_ts ?? 0);
+      if (!experiment?.split || end - experiment.split < 300) {
+        $("#control-status").textContent = "Waiting for a newer battery reading. Try Finish again shortly.";
+        return;
+      }
+      experiment.end = end;
+      save("experiment", experiment); refresh(++renderId);
+    } catch (_) {
+      $("#control-status").textContent = "Could not read the latest battery reading. Try Finish again.";
+    }
   }
-}
-
-async function pollStatus() {
-  try {
-    const st = await j("/api/status");
-    const age = st.last_sample_ts != null ? st.now_ts - st.last_sample_ts : null;
-    const ok = age != null && age <= 180;
-    setLive(ok, ok ? "live · " + age + "s ago" : "daemon stale");
-    if (currentTab !== "now") $("#stale").style.display = ok ? "none" : "block";
-    const an = await j("/api/anomalies?since=0");
-    const recent = an.filter(a => st.now_ts - a.ts < 86400).length;
-    const badge = $("#anombadge");
-    badge.style.display = recent ? "inline" : "none";
-    badge.textContent = recent;
-  } catch (e) {
-    setLive(false, "web offline");
+  function updateExperimentClock() {
+    if (tab !== "advisor" || !experiment || experiment.end) return;
+    const elapsed = (Date.now()/1000 - (experiment.split || experiment.start))/60;
+    const button = $(experiment.split ? '[data-experiment="finish"]' : '[data-experiment="split"]');
+    if (button) button.disabled = elapsed < 5;
   }
-}
-
-window.dismissWarning = function(warningId) {
-    dismissedWarnings.add(warningId);
-    if (currentTab === "now") renderNow(currentRenderId);
-};
-
-$("#tabs").addEventListener("click", (e) => {
-  const b = e.target.closest("button");
-  if (b && b.dataset.tab) switchTab(b.dataset.tab);
-});
-// Delegated so process names never reach an inline handler (XSS-safe): the
-// name lives in data-app and is read back as an inert string, never as code.
-$("#content").addEventListener("click", (e) => {
-  const b = e.target.closest("button[data-action][data-app]");
-  if (b) appAction(b.dataset.app, b.dataset.action);
-});
-$("#awake").addEventListener("change", async (e) => {
-  const prev = !e.target.checked;
-  try {
-    const r = await j2post({ on: e.target.checked });
-    e.target.checked = r.awake;
-  } catch (err) {
-    e.target.checked = prev;
-    console.error(err);
+  setInterval(updateExperimentClock, 5000);
+  function clearReportExport() {
+    if (reportExport) URL.revokeObjectURL(reportExport.url);
+    reportExport = null;
   }
-});
-async function j2post(body) {
-  const r = await fetch("/api/awake", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body) });
-  if (!r.ok) throw new Error("/api/awake -> " + r.status);
-  return r.json();
-}
-
-// Charge Limit: read-only mirror of the native macOS 80% limit. batmon cannot
-// set it on Apple Silicon; the Settings link deep-links to System Settings.
-// "holding" is inferred from today's peak charge (see queries.charge_limit_status).
-function renderLongevity(d) {
-  const cl = d.charge_limit || {};
-  const level = cl.level != null ? cl.level : 80;
-  const verdict = cl.holding === true ? "active"
-                : cl.holding === false ? "off" : "-";
-  const peak = cl.todays_peak_soc;
-  const peakTxt = peak != null ? ` · peak ${Math.round(peak)}%` : "";
-  $("#cl-status").textContent = `Limit ${level}%: ${verdict}${peakTxt}`;
-}
-// Open System Settings > Battery server-side (reliable across browsers; the
-// x-apple.systempreferences: scheme cannot be followed from a fetch/link alone).
-$("#cl-settings").addEventListener("click", () => {
-  fetch("/api/open_battery_settings", { method: "POST",
-    headers: { "X-Batmon-Client": "1" } }).catch(e => console.error(e));
-});
-
-async function renderReport(renderId) {
-  const d = await j("/api/report");
-  if (renderId !== currentRenderId) return;
-  const apps = d.top_apps.map(a =>
-    `<tr><td>${escapeHTML(a.app)}</td><td style="text-align:right">${fmtWh(a.attributed_wh)}</td></tr>`).join("");
-  $("#content").innerHTML = `
-    <div class="big">Weekly Battery Report
-      ${d.score != null ? `<span class="chip">Score ${d.score}/100 (${d.grade})</span>` : ""}
-    </div>
-    <div class="muted">${new Date(d.since_ts * 1000).toLocaleDateString()} - ${new Date().toLocaleDateString()}</div>
-    <div class="grid">
-      <div class="card"><div class="k">Energy out</div><div class="v">${fmtWh(d.wh_out)}</div></div>
-      <div class="card"><div class="k">Energy in</div><div class="v">${fmtWh(d.wh_in)}</div></div>
-      <div class="card"><div class="k">On battery</div><div class="v">${d.on_battery_h.toFixed(1)} h</div></div>
-      <div class="card"><div class="k">On AC</div><div class="v">${d.on_ac_h.toFixed(1)} h</div></div>
-      <div class="card"><div class="k">Avg temp</div><div class="v">${d.avg_temp_c != null ? d.avg_temp_c.toFixed(1) + " °C" : "-"}</div></div>
-      <div class="card"><div class="k">Anomalies</div><div class="v">${d.anomaly_count}</div></div>
-      <div class="card"><div class="k">Battery sessions</div><div class="v">${d.sessions_battery}</div></div>
-      <div class="card"><div class="k">Deep discharges</div><div class="v">${d.deep_discharges}</div></div>
-    </div>
-    <h3>Top apps this week</h3>
-    <table><tr><th>App</th><th style="text-align:right">Energy</th></tr>${apps || "<tr><td colspan=2 class=muted>no data</td></tr>"}</table>
-    <p><button class="cl-link" id="print-report" type="button">Print / Save as PDF</button></p>`;
-  document.getElementById("print-report").addEventListener("click", () => window.print());
-}
-
-switchTab("now");
-pollStatus();
-setInterval(pollStatus, 30000);
-
+  function exportMarkup() {
+    if (!reportExport) return "";
+    const x = reportExport;
+    return `<details class="export-preview evidence-details" open><summary>Export ready: ${esc(x.filename)}</summary><p class="note">Snapshot of ${tsLabel(x.start)} to ${tsLabel(x.end)}. Use the download link or copy the data below. This preview remains unchanged until you export again or change view.</p><div class="report-actions"><a id="report-download" href="${esc(x.url)}" download="${esc(x.filename)}">Download ${esc(x.format.toUpperCase())}</a><button id="copy-export">Copy data</button></div><label for="export-data">${esc(x.format.toUpperCase())} data</label><textarea id="export-data" readonly spellcheck="false" rows="9">${esc(x.data)}</textarea><p id="export-status" class="note" role="status">The data is ready. Your browser controls whether the file is downloaded.</p></details>`;
+  }
+  function exportReport(format) {
+    if (!reportData || !["json", "csv"].includes(format)) return;
+    const data = format === "json" ? JSON.stringify(reportData, null, 2) :
+      "day,observed_hours,battery_energy_out_wh,battery_energy_in_wh\n" + (reportData.analysis.current.daily || []).map(r => [r.day,r.observed_h,r.observed_h > 0 ? r.wh_out : null,r.observed_h > 0 ? r.wh_in : null].map(v => v == null ? "" : String(v)).join(",")).join("\n");
+    clearReportExport();
+    reportExport = {
+      data, format,
+      filename: `batmon-${ranges.report}-${new Date().toISOString().slice(0,10)}.${format}`,
+      start: reportData.analysis.current.start_ts, end: reportData.analysis.current.end_ts,
+      url: URL.createObjectURL(new Blob([data], {type: format === "json" ? "application/json" : "text/csv;charset=utf-8"})),
+    };
+    $("#report-export-panel").innerHTML = exportMarkup();
+    $("#report-download").click();
+  }
+  async function copyExport() {
+    const snapshot = reportExport;
+    if (!snapshot) return;
+    try {
+      await navigator.clipboard.writeText(snapshot.data);
+      if (reportExport === snapshot && $("#export-status")) $("#export-status").textContent = "Data copied to the clipboard.";
+    } catch (_) {
+      if (reportExport !== snapshot || !$("#export-data")) return;
+      $("#export-data").focus(); $("#export-data").select();
+      $("#export-status").textContent = "Clipboard access is unavailable. The data is selected; press Command+C on Mac or Control+C to copy it.";
+    }
+  }
+  $("#awake").addEventListener("change", async (e) => {
+    const input = e.target,
+      previous = !input.checked;
+    input.disabled = true;
+    try {
+      const d = await json("/api/awake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: input.checked }),
+      });
+      input.checked = d.awake;
+      $("#control-status").textContent = d.awake
+        ? "Keep awake enabled."
+        : "Normal idle sleep restored.";
+    } catch (_) {
+      input.checked = previous;
+      $("#control-status").textContent =
+        "Could not change keep awake. Try again.";
+    } finally {
+      input.disabled = false;
+    }
+  });
+  $("#cl-settings").addEventListener("click", async () => {
+    try {
+      await json("/api/open_battery_settings", {
+        method: "POST",
+        headers: { "X-Batmon-Client": "1" },
+      });
+      $("#control-status").textContent = "Battery settings opened.";
+    } catch (_) {
+      $("#control-status").textContent =
+        "Could not open settings. Open System Settings > Battery.";
+    }
+  });
+  switchTab("now");
+  status();
+  setInterval(status, 30000);
 })();
