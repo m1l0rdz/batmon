@@ -279,6 +279,12 @@ def sensor_support(conn, now_ts: int, window: int = 3600):
             (now_ts - window,)).fetchone()
         out[name] = ("ok" if values else
                      "unsupported" if rows >= SENSOR_MIN_ROWS[table] else "missing")
+    # Cells and the lifetime record are current-state values in health_now.
+    h = health_now(conn) or {}
+    fresh = h.get("ts") is not None and now_ts - h["ts"] <= 300
+    for name, present in (("cells", bool(h.get("cell_voltage_mv"))),
+                          ("lifetime", h.get("operating_time_hours") is not None)):
+        out[name] = "ok" if present else "unsupported" if fresh else "missing"
     return out
 
 

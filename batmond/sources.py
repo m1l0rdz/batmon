@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from batmond.parsers.smc import read_battery_extras
 from batmond.parsers.thermal import aggregate_temps, read_raw_sensors
 
 POWERMETRICS_CMD = [
@@ -47,6 +48,9 @@ class LiveSource:
     def temps(self) -> dict[str, float | None]:
         return aggregate_temps(read_raw_sensors())
 
+    def smc_battery(self) -> dict:
+        return read_battery_extras()
+
 
 class FixtureSource:
     def __init__(self, fixtures_dir: str):
@@ -71,3 +75,7 @@ class FixtureSource:
 
     def temps(self) -> dict[str, float | None]:
         return {"soc_temp_c": 45.7, "ssd_temp_c": 37.0}
+
+    def smc_battery(self) -> dict:
+        # The ioreg fixtures predate macOS 27.0 and carry LifetimeData.
+        return {}

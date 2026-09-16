@@ -103,6 +103,15 @@ class Collector:
                     s.temp_c = self.source.temps().get("battery_temp_c")
                 except Exception:
                     log.exception("battery temperature read failed")
+            if s.cell_voltage_mv is None or s.operating_time_hours is None:
+                # macOS 27.0 dropped CellVoltage/LifetimeData from ioreg;
+                # AppleSMC still publishes them. Only fill what is missing.
+                try:
+                    for name, value in self.source.smc_battery().items():
+                        if getattr(s, name) is None:
+                            setattr(s, name, value)
+                except Exception:
+                    log.exception("SMC battery read failed")
             brightness = parse_brightness(self.source.brightness_text())
             awake = parse_assert_awake(self.source.assertions_text())
             self.conn.execute(
@@ -123,7 +132,13 @@ class Collector:
                 "lifetime_temp_min": s.lifetime_temp_min,
                 "lifetime_temp_max": s.lifetime_temp_max,
                 "lifetime_temp_avg": s.lifetime_temp_avg,
-                "operating_time_hours": s.operating_time_hours}))
+                "operating_time_hours": s.operating_time_hours,
+                "lifetime_max_charge_ma": s.lifetime_max_charge_ma,
+                "lifetime_max_discharge_ma": s.lifetime_max_discharge_ma,
+                "lifetime_pack_max_mv": s.lifetime_pack_max_mv,
+                "lifetime_pack_min_mv": s.lifetime_pack_min_mv,
+                "lifetime_cell_max_mv": s.lifetime_cell_max_mv,
+                "lifetime_cell_min_mv": s.lifetime_cell_min_mv}))
 
             # Auto LPM check
             auto_lpm = db_mod.get_state(self.conn, "auto_lpm_threshold")

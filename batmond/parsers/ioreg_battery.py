@@ -37,6 +37,16 @@ class BatterySample:
     lifetime_temp_max: Optional[float] = None
     lifetime_temp_avg: Optional[float] = None
     operating_time_hours: Optional[float] = None
+    lifetime_max_charge_ma: Optional[float] = None
+    lifetime_max_discharge_ma: Optional[float] = None
+    lifetime_pack_max_mv: Optional[float] = None
+    lifetime_pack_min_mv: Optional[float] = None
+    lifetime_cell_max_mv: Optional[float] = None
+    lifetime_cell_min_mv: Optional[float] = None
+
+
+def _num(value) -> Optional[float]:
+    return float(value) if value is not None else None
 
 
 def _mah(*candidates) -> Optional[float]:
@@ -92,4 +102,8 @@ def parse_ioreg_battery(raw: bytes, ts: int) -> BatterySample:
         lifetime_temp_max=float(lt_max) if lt_max is not None else None,
         lifetime_temp_avg=float(lt_avg) / 10.0 if lt_avg is not None else None,
         operating_time_hours=float(op_time) if op_time is not None else None,
+        lifetime_max_charge_ma=_num(lifetime.get("MaximumChargeCurrent")),
+        lifetime_max_discharge_ma=_num(lifetime.get("MaximumDischargeCurrent")),
+        lifetime_pack_max_mv=_num(lifetime.get("MaximumPackVoltage")),
+        lifetime_pack_min_mv=_num(lifetime.get("MinimumPackVoltage")),
     )

@@ -72,6 +72,13 @@ def _change(current, previous):
     return (current - previous) / previous * 100
 
 
+LIFETIME_FIELDS = ('lifetime_temp_min', 'lifetime_temp_max', 'lifetime_temp_avg',
+                   'operating_time_hours', 'lifetime_max_charge_ma',
+                   'lifetime_max_discharge_ma', 'lifetime_pack_max_mv',
+                   'lifetime_pack_min_mv', 'lifetime_cell_max_mv',
+                   'lifetime_cell_min_mv')
+
+
 def health_summary(conn, now_ts):
     today = datetime.fromtimestamp(now_ts).date()
     rows = [r for r in queries.health(conn)
@@ -100,7 +107,12 @@ def health_summary(conn, now_ts):
         reason = 'Weekly median trend passes the quality gate. It is an observation, not a battery lifetime guarantee.'
     cur = median(recent) if len(recent) >= 4 else None
     prev = median(prior) if len(prior) >= 4 else None
+    cells = latest.get('cell_voltage_mv') or None
+    lifetime = {key: latest.get(key) for key in LIFETIME_FIELDS}
     return dict(**system_health.read_health(now_ts),
+                cells=dict(voltages_mv=cells,
+                           spread_mv=max(cells) - min(cells) if cells else None),
+                lifetime=lifetime if any(v is not None for v in lifetime.values()) else None,
                 current_raw_pct=latest.get('max_capacity_pct'),
                 median_7d_pct=cur, previous_7d_pct=prev,
                 change_pp=cur - prev if cur is not None and prev is not None else None,

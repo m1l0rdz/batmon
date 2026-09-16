@@ -332,7 +332,7 @@
         `${s.ts == null ? "Awaiting first battery reading" : s.on_ac ? (s.is_charging ? "Connected to AC, charging" : "Connected to AC") : "Running on battery"} · Last reading ${tsLabel(s.ts)}`,
       ) +
         `<section class="hero"><div class="charge-visual" role="img" aria-label="Battery ${num(s.soc_pct, 0, "%")}, reserve ${reserve}%"><div class="battery-track"><div class="battery-fill" style="height:${Math.max(0, Math.min(100, s.soc_pct || 0))}%"></div><div class="reserve-line" style="bottom:${reserve}%"></div></div><div class="charge-value"><div class="number">${num(s.soc_pct, 0, "%")}</div><p class="muted">${direction}</p></div></div><div class="runtime-panel"><div class="k">Estimated time to ${reserve}% reserve</div><div class="runtime">${runtime}</div><p class="note">${r.status === "ok" ? `Recent-load scenarios over ${num(r.window_minutes, 1)} minutes; median ${duration(r.minutes_median)}. This is not a confidence interval.` : "An estimate appears after enough uninterrupted battery use."}</p><div class="rangebar compact"><span class="k">Keep in reserve</span>${[10,20,30].map(v => `<button data-reserve="${v}" aria-pressed="${v === reserve}" class="${v === reserve ? "active" : ""}">${v}%</button>`).join("")}</div></div></section><div class="goal-strip"><label for="goal-duration">I need to keep going for</label><input id="goal-duration" type="number" min="${goalUnit === "hours" ? .25 : 15}" max="${goalUnit === "hours" ? 24 : 1440}" step="${goalUnit === "hours" ? .25 : 15}" value="${goalUnit === "hours" ? goalMinutes / 60 : goalMinutes}"><select id="goal-unit" aria-label="Duration unit"><option value="hours" ${goalUnit === "hours" ? "selected" : ""}>hours</option><option value="minutes" ${goalUnit === "minutes" ? "selected" : ""}>minutes</option></select><p id="goal-result" class="note">${goalResult(d)}</p></div>` +
-        `<div class="grid">${card("Current raw capacity", num(h.max_capacity_pct, 1, "%"), "Relative to design capacity; readings fluctuate.")}${card("Battery temperature", sensorValue(s.temp_c, "battery_temp", 1, " °C"), s.temp_c == null ? sensorNote(null, "battery_temp", "This sensor is not currently reported.") : "Battery sensor, not ambient temperature.")}${card(componentFresh ? "Chip package power" : "Last chip package power", num(c.package_mw == null ? null : c.package_mw / 1000, 1, " W"), componentNote + " Chip only; excludes display and other hardware.")}${card("Display brightness", num(s.brightness_pct, 0, "%"))}</div>` +
+        `<div class="grid">${card("Current raw capacity", num(h.max_capacity_pct, 1, "%"), "Relative to design capacity; readings fluctuate.")}${card("Battery temperature", sensorValue(s.temp_c, "battery_temp", 1, " °C"), s.temp_c == null ? sensorNote(null, "battery_temp", "This sensor is not currently reported.") : "Battery sensor, not ambient temperature.")}${card(componentFresh ? "Chip package power" : "Last chip package power", num(c.package_mw == null ? null : c.package_mw / 1000, 1, " W"), componentNote + " Chip only; excludes display and other hardware.")}${card("Display brightness", num(s.brightness_pct, 0, "%"))}${cellCard(h.cell_voltage_mv)}</div>` +
         `<p class="note">${esc(componentNote)} Chip temperature: ${sensorInline(c.soc_temp_c, "chip_temp", 1, " °C")}. SSD: ${sensorInline(c.ssd_temp_c, "ssd_temp", 1, " °C")}. Thermal pressure: ${esc(c.thermal_pressure || "unavailable")}.</p>` +
         (d.devices?.length
           ? `<p class="note">Connected devices: ${d.devices.map((x) => `${esc(x.name)} ${num(x.battery_pct, 0, "%")}`).join("; ")}.</p>`
@@ -576,6 +576,31 @@
       return;
     if (p.has_data) dailyChart(p.daily);
   }
+  const volts = (mv) => num(mv == null ? null : mv / 1000, 3, " V");
+  const amps = (ma) => num(ma == null ? null : Math.abs(ma) / 1000, 2, " A");
+  function cellCard(cells) {
+    if (!cells?.length) return card("Cell balance", sensorValue(null, "cells"), sensorNote(null, "cells", "Cell voltages are not reported yet."));
+    const spread = Math.max(...cells) - Math.min(...cells);
+    return card("Cell balance", num(spread, 0, " mV spread"), `Cells ${cells.map(volts).join(" / ")}. Instant reading; the spread widens under load and while charging.`);
+  }
+  function batteryRecord(h) {
+    const c = h.cells || {}, l = h.lifetime;
+    const cells = c.voltages_mv?.length
+      ? c.voltages_mv.map((mv, i) => card(`Cell ${i + 1}`, volts(mv))).join("") +
+        card("Cell spread", num(c.spread_mv, 0, " mV"), "Highest minus lowest cell right now.")
+      : card("Cell voltages", sensorValue(null, "cells"), sensorNote(null, "cells", "Not reported yet."));
+    const years = l?.operating_time_hours == null ? null : l.operating_time_hours / 24 / 365.25;
+    const life = l
+      ? [
+          card("Temperature range", `${num(l.lifetime_temp_min, 0, " °C")} to ${num(l.lifetime_temp_max, 0, " °C")}`, `Average ${num(l.lifetime_temp_avg, 1, " °C")}.`),
+          card("Gauge operating time", num(l.operating_time_hours, 0, " h"), years == null ? "Counts every hour, including sleep." : `About ${num(years, 1)} years; counts every hour, including sleep.`),
+          card("Highest currents", `${amps(l.lifetime_max_charge_ma)} in / ${amps(l.lifetime_max_discharge_ma)} out`, "Peak charge and discharge current."),
+          card("Pack voltage range", `${volts(l.lifetime_pack_min_mv)} to ${volts(l.lifetime_pack_max_mv)}`),
+          card("Cell voltage range", `${volts(l.lifetime_cell_min_mv)} to ${volts(l.lifetime_cell_max_mv)}`, "Lowest and highest single-cell voltage."),
+        ].join("")
+      : card("Lifetime record", sensorValue(null, "lifetime"), sensorNote(null, "lifetime", "Not reported yet."));
+    return `<h2>Battery cells</h2><div class="grid">${cells}</div><p class="note">Instant cell voltages from the battery controller (SMC). A single reading is not a diagnosis.</p><h2>Lifetime record</h2><div class="grid">${life}</div><p class="note">Extremes kept by the battery gauge since it was first powered, not only while batmon was running. They never reset.</p>`;
+  }
   function healthCards(h) {
     const checked =
       h.macos_checked_ts == null
@@ -634,6 +659,7 @@
         ) +
           healthCards(h) +
           `<p class="note">${num(h.points, 0)} daily observations spanning ${num(h.span_days, 0)} days. Each 7-day median needs at least four observations.</p>` +
+          batteryRecord(h) +
           (h.weekly?.length
             ? `<h2>Weekly raw sensor median</h2>${canvas("health", "Weekly median raw battery capacity relative to design")}`
             : empty(
