@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 import subprocess
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -28,9 +28,24 @@ class AwakeBody(BaseModel):
 
 
 def create_app(db_path: str,
-               caffeinate_bin: str = "/usr/bin/caffeinate") -> FastAPI:
-    app = FastAPI(title="batmon")
+               caffeinate_bin: str = "/usr/bin/caffeinate",
+               lifespan=None) -> FastAPI:
     awake = AwakeManager(binary=caffeinate_bin)
+
+    @asynccontextmanager
+    async def app_lifespan(app):
+        # uvicorn re-raises SIGTERM after shutdown, so atexit never runs;
+        # stop caffeinate here or it outlives every service restart.
+        try:
+            if lifespan is None:
+                yield
+            else:
+                async with lifespan(app):
+                    yield
+        finally:
+            awake.set(False)
+
+    app = FastAPI(title="batmon", lifespan=app_lifespan)
     recent_cache = {}
 
     @contextmanager

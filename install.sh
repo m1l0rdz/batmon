@@ -26,11 +26,17 @@ echo "== venv (web) =="
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
 
+# Logs live outside /tmp: macOS periodically deletes /tmp files, which lost
+# the web traceback once while the process still held the log open.
+LOG_DIR="$HOME/Library/Logs/batmon"
+
 echo "== root install (password once) =="
-sudo bash -s "$PROJECT_DIR" "$USER" <<'ROOT'
+sudo bash -s "$PROJECT_DIR" "$USER" "$LOG_DIR" "$(id -u):$(id -g)" <<'ROOT'
 set -euo pipefail
 PROJECT_DIR="$1"
 CALLING_USER="$2"
+LOG_DIR="$3"
+LOG_OWNER="$4"
 mkdir -p /usr/local/var/batmon
 chown root:staff /usr/local/var/batmon
 chmod 0775 /usr/local/var/batmon
@@ -52,11 +58,23 @@ launchctl bootout system/com.dmpi.batmond 2>/dev/null || true
 sleep 1
 launchctl enable system/com.dmpi.batmond
 launchctl bootstrap system /Library/LaunchDaemons/com.dmpi.batmond.plist
+# Bound the launchd stdout/stderr logs: a crash loop appends a traceback per
+# spawn. newsyslog runs hourly; N = no process to signal (each respawn
+# reopens the fresh file).
+cat > /etc/newsyslog.d/batmon.conf <<CONF
+# logfilename                             [owner:group] mode count size(KB) when flags
+$LOG_DIR/batmon-web.log                   $LOG_OWNER    644  3     1024     *    N
+$LOG_DIR/batmon-ui.out                    $LOG_OWNER    644  3     1024     *    N
+$LOG_DIR/batmon-ui.err                    $LOG_OWNER    644  3     1024     *    N
+/usr/local/var/batmon/batmond.out.log     root:staff    644  3     1024     *    N
+CONF
+chown root:wheel /etc/newsyslog.d/batmon.conf
+chmod 0644 /etc/newsyslog.d/batmon.conf
 ROOT
 
 echo "== user agent (web) =="
-mkdir -p ~/Library/LaunchAgents
-sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" \
+mkdir -p ~/Library/LaunchAgents "$LOG_DIR"
+sed -e "s|@PROJECT_DIR@|$PROJECT_DIR|g" -e "s|@LOG_DIR@|$LOG_DIR|g" \
   launchd/com.dmpi.batmon-web.plist.template \
   > ~/Library/LaunchAgents/com.dmpi.batmon-web.plist
 launchctl bootout "gui/$(id -u)/com.dmpi.batmon-web" 2>/dev/null || true
@@ -67,7 +85,7 @@ launchctl bootstrap "gui/$(id -u)" \
 
 echo "== GUI menu app (batmon-ui) =="
 mkdir -p ~/Library/LaunchAgents
-sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" \
+sed -e "s|@PROJECT_DIR@|$PROJECT_DIR|g" -e "s|@LOG_DIR@|$LOG_DIR|g" \
   launchd/com.dmpi.batmon-ui.plist.template \
   > ~/Library/LaunchAgents/com.dmpi.batmon-ui.plist
 launchctl bootout "gui/$(id -u)/com.dmpi.batmon-ui" 2>/dev/null || true

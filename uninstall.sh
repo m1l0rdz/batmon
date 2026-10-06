@@ -15,6 +15,7 @@ PURGE="$1"
 launchctl bootout system/com.dmpi.batmond 2>/dev/null || true
 rm -f /Library/LaunchDaemons/com.dmpi.batmond.plist
 rm -rf /usr/local/libexec/batmon
+rm -f /etc/newsyslog.d/batmon.conf
 if [ "$PURGE" = "--purge" ]; then
   rm -rf /usr/local/var/batmon
   echo "database removed"
@@ -22,5 +23,9 @@ else
   echo "database kept at /usr/local/var/batmon (pass --purge to remove)"
 fi
 ROOT
+
+if [ "$PURGE" = "--purge" ]; then
+  rm -rf ~/Library/Logs/batmon
+fi
 
 echo "Done."

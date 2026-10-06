@@ -5,7 +5,9 @@
     <key>Label</key>
     <string>com.dmpi.batmon-ui</string>
     <key>ProgramArguments</key>
+    <!-- /usr/bin/env first: see com.dmpi.batmon-web.plist.template. -->
     <array>
+        <string>/usr/bin/env</string>
         <string>@PROJECT_DIR@/.venv/bin/python</string>
         <string>@PROJECT_DIR@/ui/batmon_menu.py</string>
     </array>
@@ -14,8 +16,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/batmon-ui.out</string>
+    <string>@LOG_DIR@/batmon-ui.out</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/batmon-ui.err</string>
+    <string>@LOG_DIR@/batmon-ui.err</string>
 </dict>
 </plist>

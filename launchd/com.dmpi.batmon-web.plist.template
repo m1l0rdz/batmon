@@ -5,7 +5,11 @@
 <dict>
   <key>Label</key><string>com.dmpi.batmon-web</string>
   <key>ProgramArguments</key>
+  <!-- /usr/bin/env first: launchd's launch constraint pins the first
+       image's code signature; a brew Python upgrade changes it and the
+       next spawn is killed (Launch Constraint Violation). -->
   <array>
+    <string>/usr/bin/env</string>
     <string>@PROJECT_DIR@/.venv/bin/python</string>
     <string>-m</string>
     <string>uvicorn</string>
@@ -16,6 +20,6 @@
   <key>WorkingDirectory</key><string>@PROJECT_DIR@</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/tmp/batmon-web.log</string>
+  <key>StandardErrorPath</key><string>@LOG_DIR@/batmon-web.log</string>
 </dict>
 </plist>

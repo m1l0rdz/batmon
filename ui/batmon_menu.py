@@ -1,9 +1,27 @@
 import json
+import os
 import urllib.request
 import urllib.error
 import webbrowser
 
 import rumps
+
+
+# Same check as batmond/stdlib_guard.py; this script runs without the
+# project root on sys.path. A brew upgrade deletes the stdlib we started on.
+def _stdlib_id():
+    try:
+        st = os.stat(os.__file__)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
+_STARTUP_STDLIB_ID = _stdlib_id()
+
+
+def _interpreter_replaced():
+    return _stdlib_id() != _STARTUP_STDLIB_ID
 
 API_URL = "http://127.0.0.1:8899/api/now"
 BATTERY_SETTINGS_URL = "http://127.0.0.1:8899/api/open_battery_settings"
@@ -28,6 +46,10 @@ class BatmonApp(rumps.App):
 
     @rumps.timer(10)
     def update_menu(self, _):
+        if _interpreter_replaced():
+            # launchd KeepAlive restarts the menu on the new interpreter.
+            rumps.quit_application()
+            return
         try:
             req = urllib.request.Request(API_URL)
             with urllib.request.urlopen(req, timeout=2.0) as response:

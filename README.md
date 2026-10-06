@@ -148,7 +148,7 @@ Data is stored at `/usr/local/var/batmon/batmon.db`. The stack is Python, FastAP
 - **No runtime yet:** use battery power and allow at least five uninterrupted minutes of usable observations. Sleep gaps or a change of power source restart the window.
 - **No long-term forecast:** enough stable history is required. An observed trend can still be shown without extrapolating it into a replacement date.
 - **An embedded browser does not download:** JSON and CSV exports include a readable preview and a Copy data button. For Print / Save as PDF, use a browser that supports printing, such as Safari or Chrome.
-- **Dashboard does not open:** check `/tmp/batmon-web.log` and `/usr/local/var/batmon/batmond.out.log`, then report the error with your Mac model and macOS version. Review logs before sharing them.
+- **Dashboard does not open:** check `~/Library/Logs/batmon/batmon-web.log` and `/usr/local/var/batmon/batmond.out.log`, then report the error with your Mac model and macOS version. Review logs before sharing them.
 
 </details>
 

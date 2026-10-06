@@ -18,6 +18,7 @@ from batmond.parsers.charger import parse_charger
 from batmond.rollup import (day_key, prune, rollup_daily, rollup_hourly,
                             snapshot_health)
 from batmond.sessions import SessionTracker
+from batmond.stdlib_guard import interpreter_replaced
 
 log = logging.getLogger("batmond")
 
@@ -240,10 +241,13 @@ class Collector:
                 log.exception("maintenance step failed")
 
     def run_forever(self):
-        while True:
+        # Exit cleanly when Python is upgraded under us; launchd KeepAlive
+        # restarts the daemon on the new interpreter.
+        while not interpreter_replaced():
             start = time.time()
             self.tick(int(start))
             time.sleep(max(0.0, 15.0 - (time.time() - start)))
+        log.warning("Python install changed; exiting for launchd restart")
 
     def run_dry(self, ticks: int):
         start = int(time.time()) - ticks * 15
